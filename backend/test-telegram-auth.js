@@ -1,0 +1,13 @@
+'use strict';
+process.env.SESSION_ENCRYPTION_KEY = 'local-regression-secret';
+const assert = require('assert');
+const crypto = require('./src/api/services/TelegramSessionCrypto');
+const Auth = require('./src/api/services/TelegramAuthService');
+assert.strictEqual(Auth.normalizePhone('+967 77-123-4567'), '+967771234567');
+assert.throws(() => Auth.normalizePhone('0771234567'));
+const plain = '1BQAN-SECRET-SESSION';
+const encrypted = crypto.encrypt(plain);
+assert.notStrictEqual(encrypted, plain);
+assert.strictEqual(crypto.decrypt(encrypted), plain);
+assert.strictEqual(crypto.decrypt(plain), plain);
+console.log('telegram auth regression: PASS');
