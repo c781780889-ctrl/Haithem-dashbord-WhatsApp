@@ -1,5 +1,19 @@
 'use strict';
 
+function isUsableUrl(value, protocols) {
+    if (!value || typeof value !== 'string') return false;
+    try {
+        const parsed = new URL(value.trim());
+        return protocols.includes(parsed.protocol) && Boolean(parsed.hostname);
+    } catch (_) {
+        return false;
+    }
+}
+
+function firstUsableUrl(values, protocols) {
+    return values.find((value) => isUsableUrl(value, protocols)) || '';
+}
+
 /**
  * Railway injects reference variables only when they are declared on the
  * application service. These aliases keep local setups and older Railway
@@ -7,28 +21,29 @@
  * REDIS_URL throughout the application.
  */
 function normalizeServiceUrls() {
-    if (!process.env.DATABASE_URL) {
-        process.env.DATABASE_URL = process.env.POSTGRES_URL
-            || process.env.POSTGRES_PRIVATE_URL
-            || process.env.POSTGRESQL_URL
-            || '';
-    }
-    if (!process.env.REDIS_URL) {
-        process.env.REDIS_URL = process.env.REDIS_PRIVATE_URL
-            || process.env.REDIS_CONNECTION_URL
-            || process.env.REDIS_PUBLIC_URL
-            || '';
-    }
+    process.env.DATABASE_URL = firstUsableUrl([
+        process.env.DATABASE_URL,
+        process.env.POSTGRES_URL,
+        process.env.POSTGRES_PRIVATE_URL,
+        process.env.POSTGRESQL_URL,
+    ], ['postgres:', 'postgresql:']);
+
+    process.env.REDIS_URL = firstUsableUrl([
+        process.env.REDIS_URL,
+        process.env.REDIS_PRIVATE_URL,
+        process.env.REDIS_CONNECTION_URL,
+        process.env.REDIS_PUBLIC_URL,
+    ], ['redis:', 'rediss:']);
 }
 
 function validate() {
     normalizeServiceUrls();
     const PORT = parseInt(process.env.PORT || '8080', 10);
     if (!process.env.DATABASE_URL) {
-        console.warn('[StartupValidator] WARNING: DATABASE_URL not set. In Railway add DATABASE_URL=${{Postgres.DATABASE_URL}} to the app service.');
+        console.warn('[StartupValidator] DATABASE_URL is missing or invalid. Railway app service must reference the PostgreSQL service, e.g. ${{Postgres.DATABASE_URL}}.');
     }
     if (!process.env.REDIS_URL) {
-        console.warn('[StartupValidator] WARNING: REDIS_URL not set. In Railway add REDIS_URL=${{Redis.REDIS_URL}} to the app service.');
+        console.warn('[StartupValidator] REDIS_URL is missing or invalid. Railway app service must reference the Redis service, e.g. ${{Redis.REDIS_URL}}.');
     }
     const telegramApiId = process.env.TELEGRAM_API_ID || process.env.TELEGRAM_APP_ID || process.env.TELEGRAM_APIID || process.env.API_ID;
     const telegramApiHash = process.env.TELEGRAM_API_HASH || process.env.TELEGRAM_APP_HASH || process.env.TELEGRAM_APIHASH || process.env.API_HASH;
@@ -39,4 +54,4 @@ function validate() {
     return PORT;
 }
 
-module.exports = { validate, normalizeServiceUrls };
+module.exports = { validate, normalizeServiceUrls, isUsableUrl };

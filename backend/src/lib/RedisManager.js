@@ -26,11 +26,17 @@ const Redis = require('ioredis');
  * @param {object} extra - إعدادات إضافية تُدمج فوق الإعدادات الافتراضية
  */
 function createConnection(name, extra = {}) {
-    const url = process.env.REDIS_URL;
-    if (!url) {
+    const url = (process.env.REDIS_URL || '').trim();
+    let parsed;
+    try {
+        parsed = new URL(url);
+    } catch (_) {
+        parsed = null;
+    }
+    if (!parsed || !['redis:', 'rediss:'].includes(parsed.protocol) || !parsed.hostname) {
         throw new Error(
-            `[RedisManager] REDIS_URL is required. ` +
-            `Add it to your environment variables (Upstash free tier recommended for Railway).`
+            `[RedisManager] REDIS_URL is missing or invalid for ${name}. ` +
+            'In Railway set REDIS_URL as a reference to the Redis service, e.g. ${{Redis.REDIS_URL}}.'
         );
     }
 

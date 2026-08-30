@@ -18,6 +18,23 @@
  */
 const Redis = require('ioredis');
 
+function requireRedisUrl(context) {
+    const value = (process.env.REDIS_URL || '').trim();
+    let parsed;
+    try {
+        parsed = new URL(value);
+    } catch (_) {
+        parsed = null;
+    }
+    if (!parsed || !['redis:', 'rediss:'].includes(parsed.protocol) || !parsed.hostname) {
+        throw new Error(
+            `[Redis] REDIS_URL is missing or invalid for ${context}. ` +
+            'In Railway set it as a Reference Variable: REDIS_URL=${{Redis.REDIS_URL}}.'
+        );
+    }
+    return value;
+}
+
 // ── getRedis() — backward compatibility ──────────────────────────────────────
 // يُعيد الـ cache connection من RedisManager بدلاً من إنشاء اتصال جديد
 function getRedis() {
@@ -33,8 +50,7 @@ function getRedis() {
 let _legacyClient = null;
 function _getLegacyClient() {
     if (_legacyClient && _legacyClient.status !== 'end') return _legacyClient;
-    const url = process.env.REDIS_URL;
-    if (!url) throw new Error('[Redis] REDIS_URL is required.');
+    const url = requireRedisUrl('legacy client');
 
     _legacyClient = new Redis(url, {
         maxRetriesPerRequest: 3,
@@ -53,8 +69,7 @@ function _getLegacyClient() {
 //
 // كل Queue/Worker/QueueEvents يحتاج instance مستقل → استدعِ الدالة لكل واحد.
 function getBullMQConnection() {
-    const url = process.env.REDIS_URL;
-    if (!url) throw new Error('[Redis] REDIS_URL is required for BullMQ.');
+    const url = requireRedisUrl('BullMQ');
 
     const conn = new Redis(url, {
         maxRetriesPerRequest: null,   // ← إلزامي لـ BullMQ
@@ -71,4 +86,4 @@ function getBullMQConnection() {
     return conn;
 }
 
-module.exports = { getRedis, getBullMQConnection };
+module.exports = { getRedis, getBullMQConnection, requireRedisUrl };
