@@ -140,12 +140,6 @@ const authLimiter = rateLimit({
     message: { success: false, error: 'عدد كبير من المحاولات، حاول بعد 15 دقيقة.' }
 });
 
-const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 1000,
-    message: { success: false, error: 'Too many requests.' }
-});
-
 // ── Global Error Handlers ─────────────────────────────────────────────────────
 process.on('unhandledRejection', (r) => logger.error({ err: r }, '[CRITICAL] Unhandled Rejection'));
 process.on('uncaughtException',  (e) => { logger.error({ err: e }, '[CRITICAL] Uncaught Exception'); process.exit(1); });
@@ -153,7 +147,9 @@ process.on('uncaughtException',  (e) => { logger.error({ err: e }, '[CRITICAL] U
 // ── Routes ────────────────────────────────────────────────────────────────────
 // Global limiters (backup — per-route limiters in RateLimiter.js أكثر دقة)
 app.use('/api/v1/auth', authLimiter);  // 30 req/15min global backup
-app.use('/api/',        apiLimiter);   // 1000 req/15min global backup
+// لا نضع محدداً عاماً إضافياً على كل /api هنا؛ فالمسارات تستخدم محددات
+// دقيقة ومُسمّاة من RateLimiter.js. المحدد العام السابق كان يشارك عداداً واحداً
+// بين جميع طلبات لوحة التحكم، فيحجب الواجهة برسالة 429 بعد كثرة التنقل/التحديث.
 app.use('/api/v1',      require('./src/api/routes'));
 
 app.get('/health', async (_, res) => {
