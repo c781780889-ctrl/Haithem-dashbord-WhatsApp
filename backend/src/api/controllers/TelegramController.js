@@ -9,6 +9,7 @@ const LinkDiscoveryService = require('../services/LinkDiscoveryService');
 const AutomationHealthService = require('../services/AutomationHealthService');
 const WhatsAppManager = require('../../bot/WhatsAppManager');
 const QueueManager = require('../../lib/QueueManager');
+const TelegramMembershipRecoveryService = require('../services/TelegramMembershipRecoveryService');
 const { metrics } = require('../middleware/MetricsMiddleware');
 const { queryAll, queryOne, query, withTransaction } = require('../../lib/postgres');
 const { v4: uuidv4 } = require('uuid');
@@ -161,6 +162,13 @@ const TelegramController = {
             if (!account) return res.status(404).json({ success: false, error: 'الحساب غير موجود' });
             if (!isAdminUser(req) && account.user_id !== currentUserId(req)) return res.status(403).json({ success: false, error: 'غير مصرح بحذف هذا الحساب' });
 
+            // قبل حذف الحساب، نحفظ العضويات المؤكدة ونعيد الانضمام إليها بحساب JOIN_ROLE بديل.
+            // فشل إعادة عضوية مجموعة لا يمنع حذف الحساب، لكنه يُحفظ في سجل الاستعادة للمراجعة.
+            let membershipRecovery = null;
+            if (process.env.TELEGRAM_AUTO_REJOIN_ON_ACCOUNT_REMOVAL !== 'false') {
+                try { membershipRecovery = await TelegramMembershipRecoveryService.snapshotAndRecover({ userId: account.user_id, accountId: id }); }
+                catch (recoveryError) { console.warn(`[TelegramRecovery] account ${id} recovery failed: ${recoveryError.message}`); membershipRecovery = null; }
+            }
             // يجب إيقاف العامل قبل حذف السجل، وانتظار الإيقاف حتى لا يحاول
             // تحديث حساب تم حذفه أثناء إغلاق اتصال Telegram.
             await TelegramService.stopWorker(id);
@@ -186,7 +194,7 @@ const TelegramController = {
                 );
             });
 
-            return res.json({ success: true, message: 'تم حذف الحساب' });
+            return res.json({ success: true, message: 'تم حذف الحساب', ...(membershipRecovery ? { membershipRecovery } : {}) });
         } catch (err) {
             return res.status(500).json({ success: false, error: err.message });
         }

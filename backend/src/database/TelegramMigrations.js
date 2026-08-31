@@ -482,6 +482,27 @@ const TelegramMigrations = {
             `);
             await query(`CREATE INDEX IF NOT EXISTS idx_tg_membership_review_audit_review ON telegram_membership_review_audit(review_id,created_at DESC)`).catch(() => {});
             await query(`CREATE INDEX IF NOT EXISTS idx_tg_membership_review_audit_group ON telegram_membership_review_audit(group_id,created_at DESC)`).catch(() => {});
+            await query(`
+                CREATE TABLE IF NOT EXISTS telegram_account_group_memberships (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID NOT NULL,
+                    former_account_id UUID NOT NULL, replacement_account_id UUID, group_id TEXT NOT NULL,
+                    group_title TEXT, group_username TEXT, source_link TEXT,
+                    status VARCHAR(30) NOT NULL DEFAULT 'SNAPSHOTTED', last_error TEXT,
+                    discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), rejoined_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(user_id,former_account_id,group_id)
+                )
+            `);
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_account_group_memberships_user_status ON telegram_account_group_memberships(user_id,status,discovered_at DESC)`).catch(() => {});
+            await query(`
+                CREATE TABLE IF NOT EXISTS telegram_membership_recovery_audit (
+                    id BIGSERIAL PRIMARY KEY, user_id UUID NOT NULL, former_account_id UUID,
+                    replacement_account_id UUID, group_id TEXT, action VARCHAR(30) NOT NULL,
+                    status VARCHAR(30) NOT NULL, reason TEXT, details JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    worker_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            `);
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_membership_recovery_audit_user ON telegram_membership_recovery_audit(user_id,created_at DESC)`).catch(() => {});
 
             await query(`
                 CREATE TABLE IF NOT EXISTS telegram_automation_jobs (
