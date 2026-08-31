@@ -17,6 +17,21 @@ const SystemDB = {
 
         // Remove database objects belonging exclusively to features removed from the application.
         await p.query(`CREATE TABLE IF NOT EXISTS system_migrations (version INT PRIMARY KEY, name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+        await p.query(`
+            CREATE TABLE IF NOT EXISTS postgres_storage_alert_state (
+                state_id TEXT PRIMARY KEY,
+                alert_active BOOLEAN NOT NULL DEFAULT FALSE,
+                last_usage_percent NUMERIC(7, 3),
+                last_used_bytes BIGINT,
+                last_alert_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await p.query(`
+            INSERT INTO postgres_storage_alert_state (state_id)
+            VALUES ('postgres-storage')
+            ON CONFLICT (state_id) DO NOTHING
+        `);
         const removedFeatureTables = await p.query(`SELECT 1 FROM system_migrations WHERE version = 5 LIMIT 1`);
         if (!removedFeatureTables.rowCount) {
             await p.query(`

@@ -48,6 +48,7 @@ const DatabaseManager    = require('./src/database/DatabaseManager');
 const SystemDB           = require('./src/database/SystemDB');
 const WhatsAppManager    = require('./src/bot/WhatsAppManager');
 const JobScheduler       = require('./src/scheduler/JobScheduler');
+const PostgresStorageMonitor = require('./src/jobs/PostgresStorageMonitor');
 const TelegramService    = require('./src/api/services/TelegramService');
 const AccountRoleEngine  = require('./src/api/services/AccountRoleEngine');
 // [FIX-2] Global Socket Layer
@@ -371,6 +372,9 @@ async function bootstrap() {
         // 7. Start DatabaseBackupJob
         require('./src/jobs/DatabaseBackupJob').start(24);
 
+        // 7b. مراقبة مساحة PostgreSQL والتنبيه عند بلوغ 70% (قابل للضبط عبر البيئة)
+        PostgresStorageMonitor.start();
+
         // 8. Start GroupSyncService
         const GroupSyncService = require('./src/api/services/GroupSyncService');
         GroupSyncService.start();
@@ -395,6 +399,7 @@ function setupGracefulShutdown() {
         server.close(async () => {
             logger.info('HTTP server closed.');
             AccountRoleEngine.stop();
+            PostgresStorageMonitor.stop();
             await JobScheduler.stop();
             // [FIX-20] إيقاف QueueManager قبل RedisManager
             try { require('./src/api/services/LinkImportService').stopRecoveryWorker(); } catch {}
