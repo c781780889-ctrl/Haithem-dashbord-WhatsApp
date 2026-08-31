@@ -384,11 +384,13 @@ const Service = {
     } catch (error) {
       const retryCount = Number(job.attemptsMade || 0);
       const errorMessage = String(error.message || 'فشل تحليل Gemini').slice(0, 500);
-      const terminalFailure = retryCount >= Math.max(0, Number(job.opts?.attempts || 3) - 1);
+      const quotaExhausted = error?.status === 429 || error?.code === 429 || error?.code === 'RESOURCE_EXHAUSTED' || /RESOURCE_EXHAUSTED|quota exceeded|status code: 429|\b429\b/i.test(errorMessage);
+      const terminalFailure = quotaExhausted || retryCount >= Math.max(0, Number(job.opts?.attempts || 3) - 1);
       const failureStatus = terminalFailure ? 'failed' : 'retrying';
       await query(`UPDATE telegram_smart_results SET ai_status=$1::varchar,status=CASE WHEN $1::varchar='failed' THEN 'analysis_failed' ELSE status END,ai_error=$2::text,retry_count=$3::int,updated_at=NOW() WHERE id=$4::uuid AND user_id=$5::uuid`, [failureStatus, errorMessage, retryCount, resultId, userId]).catch(() => {});
       await this.log(userId, rule, resultId, terminalFailure ? 'gemini.failed' : 'gemini.retrying', null, errorMessage, message).catch(() => {});
       SocketBridge.to(`user:${userId}`).emit('telegram:smart:analyzed', { result: { id: resultId, user_id: userId, ai_status: failureStatus, status: terminalFailure ? 'analysis_failed' : 'new', ai_error: errorMessage }, analysis: { engine: 'gemini', status: failureStatus, error: errorMessage, retry_count: retryCount } });
+      if (quotaExhausted) return { id: resultId, user_id: userId, ai_status: 'failed', status: 'analysis_failed', ai_error: errorMessage, quota_exhausted: true };
       throw error;
     }
   },
