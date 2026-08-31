@@ -23,6 +23,16 @@ function emit(userId, payload) { try { SocketBridge.to(`user:${userId}`).emit('t
 const GlobalJoinRegistry = {
   STATUSES,
   normalize,
+  async register({ userId = null, accountId = null, originalUrl, normalizedUrl, telegramIdentifier, linkType, sourceType = 'UNKNOWN', sourceKey = null }) {
+    const parsed = normalize(normalizedUrl || originalUrl); if (!parsed) return { inserted: false, status: STATUSES.INVALID, reason: 'INVALID_LINK' };
+    const result = await withAdvisoryLock(`telegram-global-link:${parsed.urlHash}`, async client => {
+      const inserted = await client.query(`INSERT INTO telegram_global_join_links(original_url,normalized_url,url_hash,telegram_identifier,link_type,status,last_seen_at) VALUES($1,$2,$3,$4,$5,'PENDING',NOW()) ON CONFLICT(normalized_url) DO UPDATE SET original_url=EXCLUDED.original_url,last_seen_at=NOW(),updated_at=NOW() RETURNING *, (xmax=0) AS inserted`, [originalUrl || parsed.originalUrl, parsed.normalizedUrl, parsed.urlHash, telegramIdentifier || parsed.identifier, linkType || parsed.linkType]);
+      return inserted.rows[0];
+    });
+    await query(`INSERT INTO telegram_global_join_audit(user_id,account_id,original_url,normalized_url,url_hash,action,previous_status,new_status,reason) VALUES($1,$2,$3,$4,$5,'REGISTERED',NULL,$6,$7)`, [userId, accountId, originalUrl || parsed.originalUrl, parsed.normalizedUrl, parsed.urlHash, result?.status || STATUSES.PENDING, `${sourceType}${sourceKey ? `:${sourceKey}` : ''}`]).catch(() => {});
+    return { inserted: Boolean(result?.inserted), status: result?.status || STATUSES.PENDING, normalized: parsed, registryId: result?.id || null };
+  },
+
   async reserve({ client, userId, accountId, operationId, originalUrl, normalizedUrl, telegramIdentifier, linkType }) {
     const parsed = normalize(normalizedUrl || originalUrl); if (!parsed) return { allowed: false, status: STATUSES.INVALID, reason: 'INVALID_LINK' };
     const runner = async (dbClient) => {

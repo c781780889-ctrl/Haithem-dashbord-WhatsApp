@@ -182,8 +182,9 @@ const Service = {
           source_history=(SELECT COALESCE(jsonb_agg(value ORDER BY ord DESC),'[]'::jsonb) FROM (SELECT DISTINCT ON (value->>'sourceKey') value,ord FROM jsonb_array_elements(COALESCE(telegram_automation_links.source_history,'[]'::jsonb) || EXCLUDED.source_history) WITH ORDINALITY AS items(value,ord) ORDER BY value->>'sourceKey',ord DESC LIMIT 100) unique_sources),updated_at=NOW()
         RETURNING id,(xmax=0) AS inserted
       `, [userId, parsed.normalizedUrl, parsed.originalUrl, parsed.identifier, parsed.linkType, accountId, chatId || null, messageId || null, JSON.stringify([source])]);
-      if (row?.inserted) { linksSaved += 1; await recordEvent({ userId, accountId, linkId: row.id, eventType: 'link_discovered', status: 'NEW', payload: { normalizedUrl: parsed.normalizedUrl, source } }); }
-      else { duplicates += 1; await recordEvent({ userId, accountId, linkId: row?.id || null, eventType: 'link_duplicate', status: 'NEW', payload: { normalizedUrl: parsed.normalizedUrl, source } }); }
+      await GlobalJoinRegistry.register({ userId, accountId, originalUrl: parsed.originalUrl, normalizedUrl: parsed.normalizedUrl, telegramIdentifier: parsed.identifier, linkType: parsed.linkType, sourceType: source.sourceType, sourceKey: source.sourceKey });
+      if (row?.inserted) { linksSaved += 1; await recordEvent({ userId, accountId, linkId: row.id, eventType: 'link_discovered', status: 'NEW', payload: { normalizedUrl: parsed.normalizedUrl, source, globalRegistry: true } }); }
+      else { duplicates += 1; await recordEvent({ userId, accountId, linkId: row?.id || null, eventType: 'link_duplicate', status: 'NEW', payload: { normalizedUrl: parsed.normalizedUrl, source, globalRegistry: true } }); }
     }
     if (linksSaved || duplicates) await query(`UPDATE telegram_accounts SET last_activity_at=NOW(),updated_at=NOW() WHERE id=$1`, [accountId]).catch(() => {});
     return { linksFound, linksSaved, duplicates, rejected };
@@ -413,8 +414,10 @@ const Service = {
     let saved = 0; let duplicates = 0; let invalid = 0;
     for (const raw of rawLinks) {
       const parsed = normalizeTelegramLink(raw); if (!parsed) { invalid += 1; continue; }
-      const row = await queryOne(`INSERT INTO telegram_automation_links(user_id,normalized_url,original_url,telegram_identifier,link_type,source_account_id,source_history) VALUES($1,$2,$3,$4,$5,NULL,$6::jsonb) ON CONFLICT(user_id,normalized_url) DO UPDATE SET last_seen_at=NOW(),updated_at=NOW() RETURNING id,(xmax=0) AS inserted`, [userId, parsed.normalizedUrl, parsed.originalUrl, parsed.identifier, parsed.linkType, JSON.stringify([{ accountId: null, accountName: null, sourceType: 'IMPORT_FILE', seenAt: new Date().toISOString(), sourceKey: `import:file:${parsed.normalizedUrl}` }])]);
-      if (row?.inserted) { saved += 1; await recordEvent({ userId, accountId: null, linkId: row.id, eventType: 'link_imported', status: 'NEW', payload: { normalizedUrl: parsed.normalizedUrl, sourceType: 'IMPORT_FILE' } }); } else duplicates += 1;
+      const sourceKey = `import:file:${parsed.normalizedUrl}`;
+      const row = await queryOne(`INSERT INTO telegram_automation_links(user_id,normalized_url,original_url,telegram_identifier,link_type,source_account_id,source_history) VALUES($1,$2,$3,$4,$5,NULL,$6::jsonb) ON CONFLICT(user_id,normalized_url) DO UPDATE SET last_seen_at=NOW(),updated_at=NOW() RETURNING id,(xmax=0) AS inserted`, [userId, parsed.normalizedUrl, parsed.originalUrl, parsed.identifier, parsed.linkType, JSON.stringify([{ accountId: null, accountName: null, sourceType: 'IMPORT_FILE', seenAt: new Date().toISOString(), sourceKey }])]);
+      await GlobalJoinRegistry.register({ userId, originalUrl: parsed.originalUrl, normalizedUrl: parsed.normalizedUrl, telegramIdentifier: parsed.identifier, linkType: parsed.linkType, sourceType: 'IMPORT_FILE', sourceKey });
+      if (row?.inserted) { saved += 1; await recordEvent({ userId, accountId: null, linkId: row.id, eventType: 'link_imported', status: 'NEW', payload: { normalizedUrl: parsed.normalizedUrl, sourceType: 'IMPORT_FILE', globalRegistry: true } }); } else duplicates += 1;
     }
     const response = { saved, duplicates, invalid, total: rawLinks.length };
     await recordAudit({ actorId: userId, userId, action: 'LINK_IMPORT', entityType: 'telegram_automation_link', after: response, req });
