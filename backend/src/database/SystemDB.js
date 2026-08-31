@@ -28,9 +28,33 @@ const SystemDB = {
             )
         `);
         await p.query(`
+            ALTER TABLE postgres_storage_alert_state ADD COLUMN IF NOT EXISTS current_level TEXT NOT NULL DEFAULT 'normal';
+            ALTER TABLE postgres_storage_alert_state ADD COLUMN IF NOT EXISTS current_status TEXT NOT NULL DEFAULT 'healthy';
+            ALTER TABLE postgres_storage_alert_state ADD COLUMN IF NOT EXISTS last_snapshot JSONB;
+            CREATE TABLE IF NOT EXISTS postgres_storage_snapshots (
+                id BIGSERIAL PRIMARY KEY,
+                usage_percent NUMERIC(7, 3) NOT NULL,
+                used_bytes BIGINT NOT NULL,
+                limit_bytes BIGINT NOT NULL,
+                level TEXT NOT NULL,
+                dominant_source TEXT,
+                details JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS postgres_storage_snapshots_created_at_idx ON postgres_storage_snapshots (created_at DESC);
+            CREATE TABLE IF NOT EXISTS postgres_storage_audit_logs (
+                id BIGSERIAL PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                action TEXT NOT NULL,
+                result TEXT NOT NULL,
+                details JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS postgres_storage_audit_logs_created_at_idx ON postgres_storage_audit_logs (created_at DESC);
             INSERT INTO postgres_storage_alert_state (state_id)
             VALUES ('postgres-storage')
-            ON CONFLICT (state_id) DO NOTHING
+            ON CONFLICT (state_id) DO NOTHING;
         `);
         const removedFeatureTables = await p.query(`SELECT 1 FROM system_migrations WHERE version = 5 LIMIT 1`);
         if (!removedFeatureTables.rowCount) {

@@ -64,7 +64,32 @@ class QueueManager {
 
         // Handlers مُسجَّلة من الخارج (يُضيفها JobScheduler أو Bootstrap)
         this._handlers = {};
+        this._emergencyMode = false;
     }
+
+    /**
+     * Emergency Mode: pause only queues that can be deferred. Notification and
+     * core synchronization queues remain available so the system can recover.
+     */
+    async setEmergencyMode(enabled) {
+        const next = Boolean(enabled);
+        if (next === this._emergencyMode || !this._isRunning) { this._emergencyMode = next; return; }
+        this._emergencyMode = next;
+        const deferredQueues = [
+            QUEUES.CAMPAIGNS, QUEUES.LINK_IMPORTS, QUEUES.LINK_DISCOVERY,
+            QUEUES.LINK_OUTBOX, QUEUES.TELEGRAM_JOINS, QUEUES.TELEGRAM_DISCOVERY,
+            QUEUES.TELEGRAM_OUTBOX, QUEUES.GEMINI_ANALYSIS,
+        ];
+        for (const name of deferredQueues) {
+            const worker = this._workers[name];
+            if (!worker) continue;
+            if (next) await worker.pause().catch(() => {});
+            else await worker.resume().catch(() => {});
+        }
+        console.warn(`[QueueManager] Emergency Mode ${next ? 'enabled: non-essential queues paused' : 'disabled: queues resumed'}.`);
+    }
+
+    isEmergencyMode() { return this._emergencyMode; }
 
     // ══════════════════════════════════════════════════════════════════════════
     // التهيئة
@@ -222,6 +247,7 @@ class QueueManager {
         }
 
         this._isRunning = true;
+        if (this._emergencyMode) await this.setEmergencyMode(true);
         console.log('[QueueManager] ✅ All queues and workers started.');
         console.log(`[QueueManager] Queues: ${Object.values(QUEUES).join(', ')}`);
     }

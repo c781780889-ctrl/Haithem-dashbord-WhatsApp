@@ -1,6 +1,7 @@
 jest.mock('../database/SystemDB', () => ({}));
 jest.mock('../lib/QueueManager', () => ({}));
 jest.mock('../core/Logger', () => ({ warn: jest.fn(), error: jest.fn(), info: jest.fn() }));
+jest.mock('../lib/postgres', () => ({ withAdvisoryLock: async (_key, callback) => callback({}) }));
 
 const { PostgresStorageMonitor } = require('./PostgresStorageMonitor');
 
@@ -27,8 +28,8 @@ describe('PostgresStorageMonitor', () => {
 
         expect(result.usagePercent).toBe(70);
         expect(notifications.enqueueNotification).toHaveBeenCalledWith(expect.objectContaining({
-            type: 'error',
-            title: 'تنبيه مساحة PostgreSQL',
+            type: 'warning',
+            title: 'تنبيه PostgreSQL — Warning',
             message: expect.stringContaining('70.0%'),
         }));
     });
@@ -49,6 +50,6 @@ describe('PostgresStorageMonitor', () => {
         expect(result.alertActive).toBe(false);
         expect(notifications.enqueueNotification).not.toHaveBeenCalled();
         expect(db.run).toHaveBeenCalled();
-        expect(db.run.mock.calls.at(-1)[1]).toEqual(['postgres-storage', false, 60, 600]);
+        expect(db.run.mock.calls.some((call) => call[1]?.[0] === 'postgres-storage' && call[1]?.[1] === false)).toBe(true);
     });
 });

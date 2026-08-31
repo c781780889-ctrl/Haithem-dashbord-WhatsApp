@@ -37,6 +37,7 @@ const TelegramSmartConversationsView = lazy(() => import('./views/TelegramSmartC
 const AdminStatsView            = lazy(() => import('./views/AdminStatsView'));
 const SubscriptionsView         = lazy(() => import('./views/SubscriptionsView'));
 const SubscriberMonitoringView  = lazy(() => import('./views/SubscriberMonitoringView'));
+const PostgresStorageView        = lazy(() => import('./views/PostgresStorageView'));
 
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
@@ -250,6 +251,10 @@ function AppInner() {
           <Route path="/admin/subscriptions" element={
             <ProtectedRoute adminOnly currentUser={currentUser}>
               <SubscriptionsView />
+            </ProtectedRoute>} />
+          <Route path="/admin/postgres-storage" element={
+            <ProtectedRoute adminOnly currentUser={currentUser}>
+              <PostgresStorageView />
             </ProtectedRoute>} />
           <Route path="/admin/subscriber-monitoring" element={
             <ProtectedRoute adminOnly currentUser={currentUser}>

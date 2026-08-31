@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Library, Calendar,
   Megaphone, LogOut, ChevronRight,
   UsersRound, BarChart3, Crown, Brain, Activity,
-  MessageCircle, CreditCard, Monitor, SearchCheck, Link2, Send, Bot, ScrollText, Smartphone
+  MessageCircle, CreditCard, Monitor, SearchCheck, Link2, Send, Bot, ScrollText, Smartphone, Database
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -76,6 +76,7 @@ export function Sidebar({ isCollapsed, setIsCollapsed, currentUser, onLogout }: 
         { to: '/admin/stats',         icon: BarChart3,     label: 'الإحصائيات'   },
         { to: '/admin/subscriptions', icon: CreditCard,    label: 'الاشتراكات'   },
         { to: '/admin/subscriber-monitoring', icon: Monitor, label: 'مراقبة المشتركين' },
+        { to: '/admin/postgres-storage', icon: Database, label: 'مساحة PostgreSQL' },
         { to: '/telegram',            icon: MessageCircle, label: 'تيليجرام'  },
         { to: '/telegram-keywords',    icon: SearchCheck,    label: 'كلمات مفتاحية تيليجرام' },
         { to: '/telegram-smart-conversations', icon: Brain,      label: 'المحادثات الذكية' },

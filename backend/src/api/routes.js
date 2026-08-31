@@ -287,6 +287,7 @@ router.get ('/admin/cycle/stats',                                       auth, ro
 
 // ── Phase 4: Database Analysis ────────────────────────────────────────────────
 const DatabaseAnalyzerController = require('./controllers/DatabaseAnalyzerController');
+const PostgresStorageController = require('./controllers/PostgresStorageController');
 router.get ('/accounts/:id/db/health',          auth,        DatabaseAnalyzerController.getAccountDbHealth.bind(DatabaseAnalyzerController));
 router.get ('/accounts/:id/db/check',           auth,        DatabaseAnalyzerController.quickAccountCheck.bind(DatabaseAnalyzerController));
 router.get ('/admin/db/report',                 auth, role('admin'),   DatabaseAnalyzerController.getFullReport.bind(DatabaseAnalyzerController));
@@ -294,6 +295,9 @@ router.get ('/admin/db/contradictions',         auth, role('admin'),   DatabaseA
 router.get ('/admin/db/bloat',                  auth, role('admin'),   DatabaseAnalyzerController.getBloatReport.bind(DatabaseAnalyzerController));
 router.get ('/admin/db/performance',            auth, role('admin'),   DatabaseAnalyzerController.getPerformanceReport.bind(DatabaseAnalyzerController));
 router.get ('/admin/db/stats',                  auth, role('admin'),   DatabaseAnalyzerController.getStats.bind(DatabaseAnalyzerController));
+router.get ('/admin/postgres-storage/status',     auth, role('admin'),   PostgresStorageController.status.bind(PostgresStorageController));
+router.post('/admin/postgres-storage/check',      auth, role('admin'),   PostgresStorageController.check.bind(PostgresStorageController));
+router.get ('/admin/postgres-storage/audit',      auth, role('admin'),   PostgresStorageController.audit.bind(PostgresStorageController));
 
 // ── Phase 5: Redis Analysis ───────────────────────────────────────────────────
 const RedisAnalyzerController = require('./controllers/RedisAnalyzerController');
