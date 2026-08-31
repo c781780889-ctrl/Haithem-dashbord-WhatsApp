@@ -492,6 +492,9 @@ router.get   ("/telegram/join-automation-v2/health", auth, TelegramJoinAutomatio
 router.get   ("/telegram/join-automation-v2/global-status", auth, TelegramJoinAutomationController.globalStatus.bind(TelegramJoinAutomationController));
 router.post  ("/telegram/join-automation-v2/global-status", auth, TelegramJoinAutomationController.globalStatus.bind(TelegramJoinAutomationController));
 router.get   ("/telegram/join-automation-v2/global-dashboard", auth, role('admin'), TelegramJoinAutomationController.globalDashboard.bind(TelegramJoinAutomationController));
+router.get   ("/telegram/join-automation-v2/membership-review", auth, TelegramJoinAutomationController.membershipReview.bind(TelegramJoinAutomationController));
+router.post  ("/telegram/join-automation-v2/membership-review/cleanup", auth, TelegramJoinAutomationController.membershipCleanup.bind(TelegramJoinAutomationController));
+router.get   ("/telegram/join-automation-v2/membership-review/history", auth, TelegramJoinAutomationController.membershipReviewHistory.bind(TelegramJoinAutomationController));
 router.get   ("/telegram/join-automation-v2/settings", auth, TelegramJoinAutomationController.settings.bind(TelegramJoinAutomationController));
 router.patch ("/telegram/join-automation-v2/settings", auth, TelegramJoinAutomationController.updateSettings.bind(TelegramJoinAutomationController));
 router.get   ("/telegram/join-automation-v2/links", auth, TelegramJoinAutomationController.links.bind(TelegramJoinAutomationController));

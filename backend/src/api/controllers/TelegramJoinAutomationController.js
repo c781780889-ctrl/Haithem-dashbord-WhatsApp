@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const Service = require('../services/TelegramJoinAutomationService');
 const GlobalJoinRegistry = require('../services/GlobalJoinRegistry');
+const TelegramMembershipReviewService = require('../services/TelegramMembershipReviewService');
 
 const ADMIN_ROLES = new Set(['super_admin', 'superadmin', 'admin', 'owner']);
 const READ_ONLY_ROLES = new Set(['viewer', 'view_only']);
@@ -25,6 +26,18 @@ const Controller = {
   async globalDashboard(req, res) {
     try { if (!isAdmin(req)) { const error = new Error('هذا التقرير متاح للمدير فقط'); error.statusCode = 403; throw error; } return res.json({ success: true, data: await GlobalJoinRegistry.dashboard(), requestId: requestId(req) }); }
     catch (error) { return errorResponse(res, error, 'GLOBAL_DASHBOARD_ERROR'); }
+  },
+  async membershipReview(req, res) {
+    try { return res.json({ success: true, data: await TelegramMembershipReviewService.review({ userId: userId(req), keepAccountId: req.query?.keepAccountId || req.body?.keepAccountId || null }), requestId: requestId(req) }); }
+    catch (error) { return errorResponse(res, error, 'MEMBERSHIP_REVIEW_ERROR'); }
+  },
+  async membershipCleanup(req, res) {
+    try { if (!canOperate(req)) { const error = new Error('صلاحية المشاهدة فقط لا تسمح بتنفيذ الخروج'); error.code = 'PERMISSION_REQUIRED'; throw error; } return res.status(202).json({ success: true, data: await TelegramMembershipReviewService.execute({ userId: userId(req), keepAccountId: req.body?.keepAccountId || null, reviewId: req.body?.reviewId || null, confirm: req.body?.confirm === true }), requestId: requestId(req) }); }
+    catch (error) { return errorResponse(res, error, 'MEMBERSHIP_CLEANUP_ERROR'); }
+  },
+  async membershipReviewHistory(req, res) {
+    try { return res.json({ success: true, data: await TelegramMembershipReviewService.history(userId(req), req.query?.limit), requestId: requestId(req) }); }
+    catch (error) { return errorResponse(res, error, 'MEMBERSHIP_REVIEW_HISTORY_ERROR'); }
   },
   async health(req, res) {
     try { return res.json({ success: true, data: await Service.health(userId(req), isAdmin(req)), requestId: requestId(req) }); }

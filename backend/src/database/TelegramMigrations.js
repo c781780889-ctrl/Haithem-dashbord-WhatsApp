@@ -462,6 +462,27 @@ const TelegramMigrations = {
             await query(`CREATE INDEX IF NOT EXISTS idx_tg_join_ops_lease ON telegram_join_operations(status,lease_expires_at)`).catch(() => {});
             await query(`CREATE INDEX IF NOT EXISTS idx_tg_join_ops_ready ON telegram_join_operations(status,scheduled_at,created_at)`).catch(() => {});
 
+            // ── مراجعة العضويات المكررة بين حسابات JOIN_ROLE ───────────────
+            await query(`
+                CREATE TABLE IF NOT EXISTS telegram_membership_reviews (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'RUNNING', keep_account_id UUID,
+                    summary JSONB NOT NULL DEFAULT '{}'::jsonb, worker_id TEXT,
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ
+                )
+            `);
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_membership_reviews_user ON telegram_membership_reviews(user_id,started_at DESC)`).catch(() => {});
+            await query(`
+                CREATE TABLE IF NOT EXISTS telegram_membership_review_audit (
+                    id BIGSERIAL PRIMARY KEY, review_id UUID, user_id UUID NOT NULL,
+                    account_id UUID, group_id TEXT, action VARCHAR(30) NOT NULL,
+                    status VARCHAR(30) NOT NULL, reason TEXT, details JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    worker_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            `);
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_membership_review_audit_review ON telegram_membership_review_audit(review_id,created_at DESC)`).catch(() => {});
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_membership_review_audit_group ON telegram_membership_review_audit(group_id,created_at DESC)`).catch(() => {});
+
             await query(`
                 CREATE TABLE IF NOT EXISTS telegram_automation_jobs (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
