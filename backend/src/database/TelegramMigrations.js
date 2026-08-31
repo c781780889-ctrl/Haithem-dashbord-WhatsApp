@@ -361,6 +361,68 @@ const TelegramMigrations = {
             await query(`CREATE INDEX IF NOT EXISTS idx_tg_auto_links_status ON telegram_automation_links(user_id,status,join_status,archived)`).catch(() => {});
             await query(`CREATE INDEX IF NOT EXISTS idx_tg_auto_links_seen ON telegram_automation_links(user_id,last_seen_at DESC)`).catch(() => {});
 
+            // ── Global Telegram Join Registry ────────────────────────────────
+            // مصدر الحقيقة المشترك بين كل المستخدمين والحسابات والـWorkers.
+            await query(`
+                CREATE TABLE IF NOT EXISTS telegram_global_join_links (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    original_url TEXT NOT NULL,
+                    normalized_url TEXT NOT NULL UNIQUE,
+                    url_hash CHAR(64) NOT NULL UNIQUE,
+                    telegram_identifier TEXT,
+                    telegram_chat_id TEXT,
+                    telegram_username TEXT,
+                    link_type VARCHAR(20) NOT NULL,
+                    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+                    reserved_by_account_id UUID,
+                    reserved_operation_id UUID,
+                    joined_by_account_id UUID,
+                    joined_by_operation_id UUID,
+                    joined_at TIMESTAMPTZ,
+                    last_checked_at TIMESTAMPTZ,
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_error_code TEXT,
+                    last_error TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            `);
+            await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_global_chat_id ON telegram_global_join_links(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL`).catch(() => {});
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_global_status ON telegram_global_join_links(status,updated_at DESC)`).catch(() => {});
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_global_joined ON telegram_global_join_links(joined_at DESC) WHERE status IN ('JOINED','ALREADY_MEMBER')`).catch(() => {});
+            await query(`
+                CREATE TABLE IF NOT EXISTS telegram_global_join_audit (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id UUID,
+                    account_id UUID,
+                    operation_id UUID,
+                    original_url TEXT,
+                    normalized_url TEXT NOT NULL,
+                    url_hash CHAR(64) NOT NULL,
+                    telegram_chat_id TEXT,
+                    action VARCHAR(40) NOT NULL,
+                    previous_status VARCHAR(30),
+                    new_status VARCHAR(30),
+                    reason TEXT,
+                    existing_account_id UUID,
+                    existing_joined_at TIMESTAMPTZ,
+                    worker_id TEXT,
+                    task_id TEXT,
+                    error_code TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            `);
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_global_audit_url ON telegram_global_join_audit(normalized_url,created_at DESC)`).catch(() => {});
+            await query(`CREATE INDEX IF NOT EXISTS idx_tg_global_audit_action ON telegram_global_join_audit(action,created_at DESC)`).catch(() => {});
+            await query(`
+                INSERT INTO telegram_global_join_links(original_url,normalized_url,url_hash,telegram_identifier,link_type,status,joined_by_account_id,joined_at,last_seen_at)
+                SELECT DISTINCT ON (l.normalized_url) l.original_url,l.normalized_url,lpad(md5(l.normalized_url),64,'0'),l.telegram_identifier,l.link_type,'JOINED',NULL,NULL,l.last_seen_at
+                FROM telegram_automation_links l
+                WHERE l.join_status='JOINED' OR l.status='SUCCESS'
+                ORDER BY l.normalized_url,l.last_seen_at DESC
+                ON CONFLICT(normalized_url) DO NOTHING
+            `).catch(() => {});
+
             await query(`
                 CREATE TABLE IF NOT EXISTS telegram_join_operations (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

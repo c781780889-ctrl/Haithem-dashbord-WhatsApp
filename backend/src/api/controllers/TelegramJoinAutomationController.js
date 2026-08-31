@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const Service = require('../services/TelegramJoinAutomationService');
+const GlobalJoinRegistry = require('../services/GlobalJoinRegistry');
 
 const ADMIN_ROLES = new Set(['super_admin', 'superadmin', 'admin', 'owner']);
 const READ_ONLY_ROLES = new Set(['viewer', 'view_only']);
@@ -16,6 +17,14 @@ const Controller = {
   async dashboard(req, res) {
     try { return res.json({ success: true, data: await Service.dashboard(userId(req), isAdmin(req)), requestId: requestId(req) }); }
     catch (error) { return errorResponse(res, error, 'DASHBOARD_ERROR'); }
+  },
+  async globalStatus(req, res) {
+    try { return res.json({ success: true, data: await GlobalJoinRegistry.getStatus(req.body?.url || req.query?.url || ''), requestId: requestId(req) }); }
+    catch (error) { return errorResponse(res, error, 'GLOBAL_STATUS_ERROR'); }
+  },
+  async globalDashboard(req, res) {
+    try { if (!isAdmin(req)) { const error = new Error('هذا التقرير متاح للمدير فقط'); error.statusCode = 403; throw error; } return res.json({ success: true, data: await GlobalJoinRegistry.dashboard(), requestId: requestId(req) }); }
+    catch (error) { return errorResponse(res, error, 'GLOBAL_DASHBOARD_ERROR'); }
   },
   async health(req, res) {
     try { return res.json({ success: true, data: await Service.health(userId(req), isAdmin(req)), requestId: requestId(req) }); }

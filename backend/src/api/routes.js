@@ -489,6 +489,9 @@ router.get   ("/telegram-keywords/accounts",           auth, TelegramKeywordCont
 // ── أتمتة الانضمام إلى روابط Telegram (Telegram-native) ─────────────────────
 router.get   ("/telegram/join-automation-v2/dashboard", auth, TelegramJoinAutomationController.dashboard.bind(TelegramJoinAutomationController));
 router.get   ("/telegram/join-automation-v2/health", auth, TelegramJoinAutomationController.health.bind(TelegramJoinAutomationController));
+router.get   ("/telegram/join-automation-v2/global-status", auth, TelegramJoinAutomationController.globalStatus.bind(TelegramJoinAutomationController));
+router.post  ("/telegram/join-automation-v2/global-status", auth, TelegramJoinAutomationController.globalStatus.bind(TelegramJoinAutomationController));
+router.get   ("/telegram/join-automation-v2/global-dashboard", auth, role('admin'), TelegramJoinAutomationController.globalDashboard.bind(TelegramJoinAutomationController));
 router.get   ("/telegram/join-automation-v2/settings", auth, TelegramJoinAutomationController.settings.bind(TelegramJoinAutomationController));
 router.patch ("/telegram/join-automation-v2/settings", auth, TelegramJoinAutomationController.updateSettings.bind(TelegramJoinAutomationController));
 router.get   ("/telegram/join-automation-v2/links", auth, TelegramJoinAutomationController.links.bind(TelegramJoinAutomationController));

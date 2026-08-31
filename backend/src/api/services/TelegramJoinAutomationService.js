@@ -7,6 +7,7 @@ const SocketBridge = require('../../core/SocketBridge');
 const QueueManager = require('../../lib/QueueManager');
 const getTelegramService = () => require('./TelegramService');
 const LinkImportService = require('./LinkImportService');
+const GlobalJoinRegistry = require('./GlobalJoinRegistry');
 
 const SEARCH_ROLE = 'SEARCH_ROLE';
 const JOIN_ROLE = 'JOIN_ROLE';
@@ -356,17 +357,22 @@ const Service = {
       if (job && !job.inserted) return { job, totalOperations: Number(job.total_count || 0), outboxes: [], idempotent: true };
       let created = 0; const outboxes = [];
       for (let linkIndex = 0; linkIndex < links.length; linkIndex += 1) {
-        for (let accountIndex = 0; accountIndex < orderedAccounts.length; accountIndex += 1) {
-          const selected = orderedAccounts[(linkIndex + accountIndex) % orderedAccounts.length];
-          const opResult = await client.query(`INSERT INTO telegram_join_operations(user_id,link_id,account_id,job_id,idempotency_key,status,scheduled_at) VALUES($1,$2,$3,$4,$5,'QUEUED',NOW()) ON CONFLICT DO NOTHING RETURNING *`, [userId, links[linkIndex].id, selected.id, job.id, `tg-join:${job.id}:${userId}:${links[linkIndex].id}:${selected.id}`]);
-          const operation = opResult.rows[0]; if (!operation) continue;
-          const delaySeconds = safeSettings.minDelaySeconds + (safeSettings.maxDelaySeconds > safeSettings.minDelaySeconds ? crypto.randomInt(0, safeSettings.maxDelaySeconds - safeSettings.minDelaySeconds + 1) : 0) + created * safeSettings.minDelaySeconds;
-          await client.query(`UPDATE telegram_join_operations SET scheduled_at=NOW()+($1 * INTERVAL '1 second') WHERE id=$2`, [delaySeconds, operation.id]);
-          const scheduledAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
-          const payload = { operationId: operation.id, userId, jobId: job.id, accountId: selected.id, linkId: links[linkIndex].id, settings: safeSettings, scheduledAt };
-          const outbox = await client.query(`INSERT INTO telegram_automation_outbox(aggregate_type,aggregate_id,event_type,payload) VALUES('JOIN_OPERATION',$1,'ENQUEUE_JOIN',$2::jsonb) ON CONFLICT(aggregate_type,aggregate_id,event_type) DO NOTHING RETURNING id`, [operation.id, JSON.stringify(payload)]);
-          if (outbox.rows[0]) outboxes.push(outbox.rows[0].id); created += 1;
+        const selected = orderedAccounts[linkIndex % orderedAccounts.length];
+        const link = links[linkIndex];
+        const operationId = crypto.randomUUID();
+        const reservation = await GlobalJoinRegistry.reserve({ client, userId, accountId: selected.id, operationId, originalUrl: link.normalized_url, normalizedUrl: link.normalized_url, telegramIdentifier: link.telegram_identifier, linkType: link.link_type });
+        if (!reservation.allowed) {
+          const skipped = await client.query(`INSERT INTO telegram_join_operations(id,user_id,link_id,account_id,job_id,idempotency_key,status,result_code,error_code,error_message,scheduled_at) VALUES($1,$2,$3,$4,$5,$6,'SKIPPED','GLOBAL_DUPLICATE','GLOBAL_DUPLICATE',$7,NOW()) ON CONFLICT DO NOTHING RETURNING *`, [operationId, userId, link.id, selected.id, job.id, `tg-join:${job.id}:${link.id}:${selected.id}:duplicate`, `تم تخطي الرابط: ${reservation.reason === 'GLOBAL_RESERVED' ? 'محجوز حاليًا' : 'تم الانضمام إليه عالميًا مسبقًا'}`]);
+          if (skipped.rows[0]) { created += 1; await client.query(`INSERT INTO telegram_global_join_audit(user_id,account_id,operation_id,original_url,normalized_url,url_hash,action,previous_status,new_status,reason,created_at) VALUES($1,$2,$3,$4,$5,$6,'SKIPPED',$7,'SKIPPED_DUPLICATE',$8,NOW())`, [userId, selected.id, operationId, link.normalized_url, link.normalized_url, reservation.normalized?.urlHash || '', reservation.existing?.status || null, reservation.reason]); }
+          continue;
         }
+        const delaySeconds = safeSettings.minDelaySeconds + (safeSettings.maxDelaySeconds > safeSettings.minDelaySeconds ? crypto.randomInt(0, safeSettings.maxDelaySeconds - safeSettings.minDelaySeconds + 1) : 0) + created * safeSettings.minDelaySeconds;
+        const opResult = await client.query(`INSERT INTO telegram_join_operations(id,user_id,link_id,account_id,job_id,idempotency_key,status,scheduled_at) VALUES($1,$2,$3,$4,$5,$6,'QUEUED',NOW()+($7 * INTERVAL '1 second')) ON CONFLICT DO NOTHING RETURNING *`, [operationId, userId, link.id, selected.id, job.id, `tg-join:${job.id}:${link.id}:${selected.id}`, delaySeconds]);
+        const operation = opResult.rows[0]; if (!operation) continue;
+        const scheduledAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
+        const payload = { operationId: operation.id, userId, jobId: job.id, accountId: selected.id, linkId: link.id, settings: safeSettings, scheduledAt };
+        const outbox = await client.query(`INSERT INTO telegram_automation_outbox(aggregate_type,aggregate_id,event_type,payload) VALUES('JOIN_OPERATION',$1,'ENQUEUE_JOIN',$2::jsonb) ON CONFLICT(aggregate_type,aggregate_id,event_type) DO NOTHING RETURNING id`, [operation.id, JSON.stringify(payload)]);
+        if (outbox.rows[0]) outboxes.push(outbox.rows[0].id); created += 1;
       }
       if (!created) { const error = new Error('لم تُنشأ عمليات جديدة؛ كل علاقات الحساب والرابط موجودة مسبقًا أو تمت معالجتها'); error.code = 'DUPLICATE_OPERATION'; throw error; }
       await client.query(`UPDATE telegram_automation_jobs SET total_count=$1,status='RUNNING',started_at=NOW(),updated_at=NOW() WHERE id=$2`, [created, job.id]);
@@ -513,8 +519,15 @@ const Service = {
       const updated = await client.query(`UPDATE telegram_join_operations SET status=$1::varchar(30),result_code=$2,error_code=$3,error_message=$4,membership_state=$5,verification_evidence=$6::jsonb,duration_ms=$7,lease_expires_at=NULL,heartbeat_at=NOW(),joined_at=CASE WHEN $1::text='SUCCESS' THEN NOW() ELSE joined_at END,updated_at=NOW() WHERE id=$8 AND status='PROCESSING' RETURNING id`, [status, result.resultCode || null, result.errorCode || null, result.errorMessage || null, result.membershipState || null, JSON.stringify(safePayload(result.verificationEvidence || {})), result.durationMs || null, operation.id]);
       if (!updated.rows[0]) return;
       await client.query(`UPDATE telegram_accounts SET operation_count=operation_count+1,last_operation_at=NOW(),last_success_at=CASE WHEN $1::text='SUCCESS' THEN NOW() ELSE last_success_at END,last_error=CASE WHEN $1::text='SUCCESS' THEN NULL ELSE COALESCE($2::text,last_error) END,updated_at=NOW() WHERE id=$3`, [status, result.errorMessage || null, operation.account_id]);
-      if (successful) await client.query(`UPDATE telegram_automation_links SET joined_by_accounts=(SELECT COALESCE(jsonb_agg(DISTINCT value),'[]'::jsonb) FROM (SELECT value FROM jsonb_array_elements(COALESCE(joined_by_accounts,'[]'::jsonb)) ids(value) UNION ALL SELECT to_jsonb($1::text)) v),last_error=NULL,updated_at=NOW() WHERE id=$2`, [String(operation.account_id), operation.link_id]);
-      else if (result.errorMessage) await client.query(`UPDATE telegram_automation_links SET last_error=$1,updated_at=NOW() WHERE id=$2`, [result.errorMessage, operation.link_id]);
+      const linkRow = (await client.query(`SELECT normalized_url FROM telegram_automation_links WHERE id=$1`, [operation.link_id])).rows[0];
+      const globalRow = linkRow ? (await client.query(`SELECT id FROM telegram_global_join_links WHERE normalized_url=$1 FOR UPDATE`, [linkRow.normalized_url])).rows[0] : null;
+      if (successful) {
+        await client.query(`UPDATE telegram_automation_links SET joined_by_accounts=(SELECT COALESCE(jsonb_agg(DISTINCT value),'[]'::jsonb) FROM (SELECT value FROM jsonb_array_elements(COALESCE(joined_by_accounts,'[]'::jsonb)) ids(value) UNION ALL SELECT to_jsonb($1::text)) v),last_error=NULL,updated_at=NOW() WHERE id=$2`, [String(operation.account_id), operation.link_id]);
+        if (globalRow) await GlobalJoinRegistry.markJoined(client, { registryId: globalRow.id, accountId: operation.account_id, operationId: operation.id, userId: operation.user_id, normalizedUrl: linkRow.normalized_url, chatId: result.telegramChatId || result.chatId || null, username: result.telegramUsername || null, status: result.resultCode === 'ALREADY_MEMBER' ? 'ALREADY_MEMBER' : 'JOINED' });
+      } else {
+        if (result.errorMessage) await client.query(`UPDATE telegram_automation_links SET last_error=$1,updated_at=NOW() WHERE id=$2`, [result.errorMessage, operation.link_id]);
+        if (globalRow) await GlobalJoinRegistry.markFailed(client, { registryId: globalRow.id, userId: operation.user_id, accountId: operation.account_id, operationId: operation.id, errorCode: result.errorCode || result.resultCode, errorMessage: result.errorMessage || null });
+      }
       await updateLinkAggregate(operation.link_id, client);
       await client.query(`UPDATE telegram_automation_jobs SET processed_count=processed_count+1,success_count=success_count+CASE WHEN $1::text='SUCCESS' THEN 1 ELSE 0 END,failed_count=failed_count+CASE WHEN $1::text='FAILED' THEN 1 ELSE 0 END,skipped_count=skipped_count+CASE WHEN $1::text='SKIPPED' THEN 1 ELSE 0 END,status=CASE WHEN processed_count+1>=total_count THEN 'COMPLETED' ELSE status END,completed_at=CASE WHEN processed_count+1>=total_count THEN NOW() ELSE completed_at END,updated_at=NOW() WHERE id=$2`, [status, operation.job_id]);
       await client.query(`INSERT INTO telegram_automation_events(user_id,job_id,operation_id,account_id,link_id,event_type,status,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, [operation.user_id, operation.job_id, operation.id, operation.account_id, operation.link_id, successful ? 'operation_completed' : 'operation_failed', status, JSON.stringify(safePayload({ resultCode: result.resultCode || null, membershipState: result.membershipState || null, errorCode: result.errorCode || null, durationMs: result.durationMs || null, verificationEvidence: result.verificationEvidence || {}, idempotent: result.resultCode === 'ALREADY_MEMBER' }))]);
