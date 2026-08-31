@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import { Activity, AlertTriangle, Brain, CheckCircle2, Clock3, ExternalLink, Eye, Filter, Layers3, MessageCircle, Pause, Pin, PinOff, Play, Plus, Radio, RefreshCw, Search, Settings, SlidersHorizontal, Sparkles, Star, StarOff, TestTube2, Trash2, UserRound, Users, X } from 'lucide-react';
 import { API, authFetch, TOKEN_KEY, USER_KEY } from '@/utils/api';
 import { useToast } from '@/components/ui/ToastProvider';
+import { useDebouncedValue, isAbortError } from '@/hooks/useDebouncedValue';
 
 type SmartResult = { id:string; rule_id:string; rule_name?:string; rule_min_score?:number|string; account_name?:string; telegram_account_id:string; chat_id:string; chat_title?:string; chat_username?:string; chat_type?:string; message_id:string; sender_id?:string; sender_username?:string; sender_name?:string; message_text:string; context?:any; match_score?:number|string|null; is_match:boolean; reason?:string; ai_status?:string; ai_error?:string|null; status:string; blocked_user_active?:boolean; blocked_group_active?:boolean; is_saved:boolean; is_pinned:boolean; deleted_in_telegram?:boolean; message_timestamp?:string; detected_at?:string; message_link?:string|null };
 type SmartRule = { id:string; name:string; description?:string; instructions:string; match_mode:string; min_score:number; priority:string; account_ids:any; is_active:boolean };
@@ -30,6 +31,8 @@ export default function TelegramSmartConversationsView({ userId }: { userId:stri
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search.trim(), 350);
+  const loadInFlightRef = React.useRef(false);
   const [accountFilter, setAccountFilter] = useState('');
   const [ruleFilter, setRuleFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -45,26 +48,44 @@ export default function TelegramSmartConversationsView({ userId }: { userId:stri
   const [testForm, setTestForm] = useState({ instructions:'', text:'', min_score:70, match_mode:'balanced' });
   const [testResult, setTestResult] = useState<any>(null);
 
-  const load = useCallback(async (silent=false) => {
+  const load = useCallback(async (silent=false, signal?: AbortSignal) => {
+    if (signal?.aborted || loadInFlightRef.current) return;
+    loadInFlightRef.current = true;
     if (!silent) setLoading(true); else setRefreshing(true);
     try {
       const query = new URLSearchParams({ limit:'50' });
-      if (search) query.set('search', search);
+      if (debouncedSearch) query.set('search', debouncedSearch);
       if (accountFilter) query.set('account_id', accountFilter);
       if (ruleFilter) query.set('rule_id', ruleFilter);
       if (statusFilter) query.set('status', statusFilter);
       if (minScore) query.set('min_score', minScore);
       if (pinnedOnly) query.set('pinned', 'true');
       if (savedOnly) query.set('saved', 'true');
-      const data = await json(await authFetch(`${API}/telegram-smart-conversations/dashboard?${query.toString()}`));
-      const aiStatus = await json(await authFetch(`${API}/telegram-smart-conversations/ai/status`)).catch(() => ({}));
+      const data = await json(await authFetch(`${API}/telegram-smart-conversations/dashboard?${query.toString()}`, { signal }));
+      // حالة Gemini اختيارية؛ لا تجعل فشلها يحجب بيانات المحادثات نفسها.
+      const aiStatus = await json(await authFetch(`${API}/telegram-smart-conversations/ai/status`, { signal })).catch(() => ({}));
       setGemini(aiStatus || {});
       setAccounts(data.accounts || []); setRules(data.rules || []); setResults(data.results || []); setLogs(data.logs || []); setNotifications(data.notifications || []); setSystem(data.system || {}); setStats(data.stats || {}); setMonitoring(data.monitoring || {}); setSettings(data.settings || settings);
-    } catch (error:any) { notify(error.message || 'تعذر تحميل المحادثات الذكية', 'error'); }
-    finally { setLoading(false); setRefreshing(false); }
-  }, [accountFilter, minScore, notify, pinnedOnly, ruleFilter, savedOnly, search, statusFilter]);
+    } catch (error:any) {
+      if (!isAbortError(error)) notify(error.message || 'تعذر تحميل المحادثات الذكية، تحقق من اتصال الخادم', 'error');
+    } finally {
+      loadInFlightRef.current = false;
+      if (!signal?.aborted) { setLoading(false); setRefreshing(false); }
+    }
+  }, [accountFilter, debouncedSearch, minScore, notify, pinnedOnly, ruleFilter, savedOnly, statusFilter]);
 
-  useEffect(() => { load(); const timer = window.setInterval(() => load(true), 15000); const socket = io(window.location.origin, { path:'/socket.io', transports:['websocket','polling'], reconnection:true }); const user = JSON.parse(localStorage.getItem(USER_KEY) || '{}'); const join = () => socket.emit('join_user', { userId:user.id || userId, token:localStorage.getItem(TOKEN_KEY) || '' }); socket.on('connect', join); socket.on('telegram:smart:analyzed', () => load(true)); socket.on('telegram:smart:high_priority', (event:any) => { const item = event?.notification; if (item) { notify(`🔴 أولوية عالية — ${item.rule_name || 'قاعدة ذكية'} (${score(item.match_score)}%)`, 'warning'); setNotifications(current => [item, ...current.filter(existing => existing.id !== item.id)].slice(0, 30)); } load(true); }); return () => { window.clearInterval(timer); socket.disconnect(); }; }, [load, notify, userId]);
+  useEffect(() => {
+    const controller = new AbortController();
+    load(false, controller.signal);
+    const timer = window.setInterval(() => load(true, controller.signal), 15000);
+    const socket = io(window.location.origin, { path:'/socket.io', transports:['websocket','polling'], reconnection:true });
+    const user = JSON.parse(localStorage.getItem(USER_KEY) || '{}');
+    const join = () => socket.emit('join_user', { userId:user.id || userId, token:localStorage.getItem(TOKEN_KEY) || '' });
+    socket.on('connect', join);
+    socket.on('telegram:smart:analyzed', () => load(true, controller.signal));
+    socket.on('telegram:smart:high_priority', (event:any) => { const item = event?.notification; if (item) { notify(`🔴 أولوية عالية — ${item.rule_name || 'قاعدة ذكية'} (${score(item.match_score)}%)`, 'warning'); setNotifications(current => [item, ...current.filter(existing => existing.id !== item.id)].slice(0, 30)); } load(true, controller.signal); });
+    return () => { controller.abort(); window.clearInterval(timer); socket.disconnect(); };
+  }, [load, notify, userId]);
 
   const saveRule = async () => { try { await json(await authFetch(`${API}/telegram-smart-conversations/rules`, { method:'POST', body:JSON.stringify(ruleForm) })); notify('تم إنشاء القاعدة الذكية', 'success'); setRuleModal(false); setRuleForm({ name:'', description:'', instructions:'', min_score:70, match_mode:'balanced', priority:'medium', account_ids:[], is_active:true }); await load(); } catch (error:any) { notify(error.message || 'تعذر إنشاء القاعدة', 'error'); } };
   const testRule = async () => { try { const data = await json(await authFetch(`${API}/telegram-smart-conversations/test`, { method:'POST', body:JSON.stringify(testForm) })); setTestResult(data); } catch (error:any) { notify(error.message || 'تعذر اختبار القاعدة', 'error'); } };
