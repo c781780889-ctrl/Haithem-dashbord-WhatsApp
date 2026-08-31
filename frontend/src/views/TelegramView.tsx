@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useDebouncedValue, isAbortError } from '../hooks/useDebouncedValue';
 import {
   MessageCircle, Plus, RefreshCw, Loader2, X, Trash2, Copy,
   ExternalLink, CheckCircle2, Search, Filter, Download,
@@ -238,6 +239,7 @@ export default function TelegramView() {
   const [filterDateTo, setFilterDateTo] = useState('');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const debouncedSearch = useDebouncedValue(search.trim(), 350);
   const LIMIT = 50;
 
   // Selected links for bulk
@@ -275,46 +277,68 @@ export default function TelegramView() {
   }, []); // eslint-disable-line
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
-  const fetchAccounts = useCallback(async () => {
+  const fetchAccounts = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
     setLoading(true);
     try {
-      const res = await authFetch(`${API}/telegram/accounts`);
+      const res = await authFetch(`${API}/telegram/accounts`, { signal });
       const data = await res.json();
       if (data.success) setAccounts(data.accounts);
-    } finally { setLoading(false); }
+    } catch (error) {
+      if (!isAbortError(error)) throw error;
+    } finally { if (!signal?.aborted) setLoading(false); }
   }, []);
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
     try {
-      const res = await authFetch(`${API}/telegram/accounts/stats`);
+      const res = await authFetch(`${API}/telegram/accounts/stats`, { signal });
       const data = await res.json();
       if (data.success) setStats(data.stats);
-    } catch {}
+    } catch (error) {
+      if (!isAbortError(error)) throw error;
+    }
   }, []);
 
-  const fetchLinks = useCallback(async () => {
+  const fetchLinks = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
     setLinksLoading(true);
     try {
       const params = new URLSearchParams({
         page: String(page), limit: String(LIMIT),
-        ...(search && { search }),
+        ...(debouncedSearch && { search: debouncedSearch }),
         ...(filterStatus && { status: filterStatus }),
         ...(filterCopied && { copied: filterCopied }),
         ...(filterAccount && { account_id: filterAccount }),
         ...(filterDateFrom && { date_from: filterDateFrom }),
         ...(filterDateTo && { date_to: filterDateTo }),
       });
-      const res = await authFetch(`${API}/telegram/links?${params}`);
+      const res = await authFetch(`${API}/telegram/links?${params}`, { signal });
       const data = await res.json();
       if (data.success) {
         setLinks(data.links);
         setTotal(data.total);
       }
-    } finally { setLinksLoading(false); }
-  }, [page, search, filterStatus, filterAccount, filterDateFrom, filterDateTo]);
+    } catch (error) {
+      if (!isAbortError(error)) throw error;
+    } finally { if (!signal?.aborted) setLinksLoading(false); }
+  }, [page, debouncedSearch, filterStatus, filterAccount, filterDateFrom, filterDateTo]);
 
-  useEffect(() => { fetchAccounts(); fetchStats(); }, []);
-  useEffect(() => { if (tab === 'links') fetchLinks(); }, [tab, fetchLinks]);
+  useEffect(() => {
+    const controller = new AbortController();
+    Promise.all([fetchAccounts(controller.signal), fetchStats(controller.signal)]).catch(error => {
+      if (!isAbortError(error)) addToast({ title: 'تعذر تحميل بيانات Telegram', description: error?.message, type: 'error' });
+    });
+    return () => controller.abort();
+  }, [fetchAccounts, fetchStats, addToast]);
+  useEffect(() => {
+    if (tab !== 'links') return;
+    const controller = new AbortController();
+    fetchLinks(controller.signal).catch(error => {
+      if (!isAbortError(error)) addToast({ title: 'تعذر تحميل روابط Telegram', description: error?.message, type: 'error' });
+    });
+    return () => controller.abort();
+  }, [tab, fetchLinks, addToast]);
 
   // ── Account actions ───────────────────────────────────────────────────────
   async function deleteAccount(id: string) {

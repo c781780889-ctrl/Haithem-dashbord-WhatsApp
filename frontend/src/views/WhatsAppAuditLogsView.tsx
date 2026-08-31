@@ -8,6 +8,7 @@ import {
 import { API, authFetch } from '../utils/api';
 import { cn } from '@/utils/cn';
 import { useToast } from '../components/ui/ToastProvider';
+import { useDebouncedValue, isAbortError } from '../hooks/useDebouncedValue';
 
 type AuditItem = {
   id: string | number;
@@ -114,54 +115,65 @@ export default function WhatsAppAuditLogsView() {
   const [selected, setSelected] = useState<AuditItem | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [lastLiveEvent, setLastLiveEvent] = useState<string | null>(null);
+  const debouncedSearch = useDebouncedValue(search.trim(), 350);
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams({ page: String(page), pageSize: '50' });
-    if (search.trim()) params.set('search', search.trim());
+    if (debouncedSearch) params.set('search', debouncedSearch);
     if (action !== 'all') params.set('action', action);
     if (entityType !== 'all') params.set('entityType', entityType);
     if (from) params.set('from', `${from}T00:00:00.000Z`);
     if (to) params.set('to', `${to}T23:59:59.999Z`);
     return params.toString();
-  }, [page, search, action, entityType, from, to]);
+  }, [page, debouncedSearch, action, entityType, from, to]);
 
   const statsQuery = useMemo(() => {
     const params = new URLSearchParams();
-    if (search.trim()) params.set('search', search.trim());
+    if (debouncedSearch) params.set('search', debouncedSearch);
     if (action !== 'all') params.set('action', action);
     if (entityType !== 'all') params.set('entityType', entityType);
     if (from) params.set('from', `${from}T00:00:00.000Z`);
     if (to) params.set('to', `${to}T23:59:59.999Z`);
     return params.toString();
-  }, [search, action, entityType, from, to]);
+  }, [debouncedSearch, action, entityType, from, to]);
 
-  const loadLogs = useCallback(async () => {
+  const loadLogs = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
     setLoading(true);
     try {
-      const response = await authFetch(`${API}/whatsapp/join-automation/audit?${queryString}`);
+      const response = await authFetch(`${API}/whatsapp/join-automation/audit?${queryString}`, { signal });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || 'تعذر تحميل Audit Logs');
       setLogs({ items: data.items || [], page: Number(data.page || page), pageSize: Number(data.pageSize || 50), total: Number(data.total || 0), totalPages: Math.max(1, Number(data.totalPages || 1)) });
     } catch (error: any) {
-      addToast({ title: error?.message || 'تعذر تحميل Audit Logs', type: 'error' });
-    } finally { setLoading(false); }
+      if (!isAbortError(error)) addToast({ title: error?.message || 'تعذر تحميل Audit Logs', type: 'error' });
+    } finally { if (!signal?.aborted) setLoading(false); }
   }, [addToast, page, queryString]);
 
-  const loadStats = useCallback(async () => {
+  const loadStats = useCallback(async (signal?: AbortSignal) => {
+    if (signal?.aborted) return;
     setStatsLoading(true);
     try {
-      const response = await authFetch(`${API}/whatsapp/join-automation/audit/stats${statsQuery ? `?${statsQuery}` : ''}`);
+      const response = await authFetch(`${API}/whatsapp/join-automation/audit/stats${statsQuery ? `?${statsQuery}` : ''}`, { signal });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || 'تعذر تحميل إحصاءات التدقيق');
       setStats(data.stats || { total: 0, last24h: 0, last7d: 0, actors: 0, byAction: [], byEntity: [], byDay: [] });
     } catch (error: any) {
-      addToast({ title: error?.message || 'تعذر تحميل إحصاءات التدقيق', type: 'error' });
-    } finally { setStatsLoading(false); }
+      if (!isAbortError(error)) addToast({ title: error?.message || 'تعذر تحميل إحصاءات التدقيق', type: 'error' });
+    } finally { if (!signal?.aborted) setStatsLoading(false); }
   }, [addToast, statsQuery]);
 
   const refresh = useCallback(() => { loadLogs(); loadStats(); }, [loadLogs, loadStats]);
-  useEffect(() => { loadLogs(); }, [loadLogs]);
-  useEffect(() => { loadStats(); }, [loadStats]);
+  useEffect(() => {
+    const controller = new AbortController();
+    loadLogs(controller.signal);
+    return () => controller.abort();
+  }, [loadLogs]);
+  useEffect(() => {
+    const controller = new AbortController();
+    loadStats(controller.signal);
+    return () => controller.abort();
+  }, [loadStats]);
 
   useEffect(() => {
     const socket = io(window.location.origin, { path: '/socket.io', transports: ['websocket', 'polling'] });

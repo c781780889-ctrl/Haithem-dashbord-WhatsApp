@@ -97,8 +97,9 @@ function AppInner() {
     // بدون تسجيل دخول — تجاهل التحقق من التوكن
     if (!token) return;
     let cancelled = false;
+    const controller = new AbortController();
 
-    fetch(`${API}/auth/verify`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`${API}/auth/verify`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal })
       .then(r => {
         if (cancelled) return null;
         if (r.status === 401) { handleLogout(); return null; }
@@ -113,7 +114,7 @@ function AppInner() {
 
         // جلب حالة تيلجرام للمشتركين العاديين
         if (!['super_admin', 'admin'].includes(d.user?.role)) {
-          fetch(`${API}/subscription/me`, { headers: { Authorization: `Bearer ${token}` } })
+          fetch(`${API}/subscription/me`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal })
             .then(r2 => r2.json())
             .then(s => {
               if (cancelled || !s.success) return;
@@ -124,17 +125,19 @@ function AppInner() {
             .catch(() => {});
         }
       })
-      .catch(() => { if (!cancelled) setIsConnected(false); });
+      .catch(error => {
+        if (!cancelled && error?.name !== 'AbortError') setIsConnected(false);
+      });
 
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── FIX 2: Fetch accounts so AppLayout/TopBar get the data they need ───────
-  const fetchAccounts = useCallback(async () => {
-    if (!token) return;
+  const fetchAccounts = useCallback(async (signal?: AbortSignal) => {
+    if (!token || signal?.aborted) return;
     setAccountsLoading(true);
     try {
-      const res  = await authFetch(`${API}/accounts`);
+      const res  = await authFetch(`${API}/accounts`, { signal });
       const data = await res.json();
       if (data.success) {
         const list: any[] = data.accounts ?? [];
@@ -149,28 +152,39 @@ function AppInner() {
           return first;
         });
       }
-    } catch {
-      // network error — silent
+    } catch (error: any) {
+      // إلغاء الطلب عند تغيير الجلسة أو تفكيك المكوّن ليس خطأً للمستخدم.
+      if (error?.name !== 'AbortError') { /* network error — silent */ }
     } finally {
-      setAccountsLoading(false);
+      if (!signal?.aborted) setAccountsLoading(false);
     }
   }, [token]);
 
   useEffect(() => {
-    if (token && currentUser) fetchAccounts();
-  }, [token, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!token || !currentUser) return;
+    const controller = new AbortController();
+    fetchAccounts(controller.signal);
+    return () => controller.abort();
+  }, [token, currentUser?.id, fetchAccounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Account status polling every 30s — keeps TopBar indicator live ────────
   useEffect(() => {
     if (!token || !currentUser) return;
-    const id = setInterval(() => {
-      // Silent refresh: update account statuses without showing loading spinner
-      authFetch(`${API}/accounts`)
-        .then(r => r.json())
-        .then(d => { if (d.success) setAccounts(d.accounts ?? []); })
-        .catch(() => {});
-    }, 30_000);
-    return () => clearInterval(id);
+    const controller = new AbortController();
+    let requestInFlight = false;
+    const refresh = async () => {
+      if (requestInFlight || controller.signal.aborted) return;
+      requestInFlight = true;
+      try {
+        const response = await authFetch(`${API}/accounts`, { signal: controller.signal });
+        const data = await response.json();
+        if (data.success && !controller.signal.aborted) setAccounts(data.accounts ?? []);
+      } catch (error: any) {
+        if (error?.name !== 'AbortError') { /* silent background refresh */ }
+      } finally { requestInFlight = false; }
+    };
+    const id = window.setInterval(refresh, 30_000);
+    return () => { controller.abort(); window.clearInterval(id); };
   }, [token, currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleLogin(accessToken: string, refreshToken: string, user: any) {
