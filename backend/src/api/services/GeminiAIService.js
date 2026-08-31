@@ -1,6 +1,7 @@
 const { randomUUID } = require('crypto');
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const configuredModel = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const MODEL = configuredModel === 'gemini-2.5-flash' ? 'gemini-3.6-flash' : configuredModel;
 const API_VERSION = process.env.GEMINI_API_VERSION || 'v1';
 const TIMEOUT_MS = Math.max(1000, Number(process.env.GEMINI_TIMEOUT_MS || 30000));
 const MAX_RETRIES = Math.max(0, Math.min(5, Number(process.env.GEMINI_MAX_RETRIES || 2)));
