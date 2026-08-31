@@ -316,13 +316,28 @@ const Service = {
   async deleteMessage(userId, id) { await ensureTables(); const row = await queryOne(`SELECT * FROM telegram_smart_results WHERE id=$1 AND user_id=$2`, [id, userId]); if (!row) throw Object.assign(new Error('الرسالة غير موجودة'), { code:'RESULT_NOT_FOUND' }); const worker = TelegramService.getWorker?.(row.telegram_account_id); if (!worker?.client || worker.status !== 'running') throw Object.assign(new Error('الحساب المصدر غير متصل'), { code:'ACCOUNT_OFFLINE' }); const messageId = Number(row.message_id); if (!Number.isSafeInteger(messageId) || messageId <= 0) throw Object.assign(new Error('معرف الرسالة غير صالح للحذف عبر Telegram'), { code:'MESSAGE_ID_INVALID' }); try { const entity = await worker.client.getInputEntity(String(row.chat_id)); await worker.client.deleteMessages(entity, [messageId], { revoke:true }); } catch (error) { throw Object.assign(new Error('تعذر حذف الرسالة من Telegram؛ تحقق من صلاحيات الحساب'), { code:'TELEGRAM_DELETE_FAILED', cause:error }); } const updated = await queryOne(`UPDATE telegram_smart_results SET deleted_in_telegram=true,deleted_at=NOW(),status='deleted',updated_at=NOW() WHERE id=$1 AND user_id=$2 RETURNING *`, [id, userId]); await this.log(userId, null, id, 'message.deleted', null, 'تم حذف الرسالة من Telegram', updated); SocketBridge.to(`user:${userId}`).emit('telegram:smart:message_deleted', { result:decorate(updated) }); return { deleted:true, result:decorate(updated) }; },
   async deleteResult(userId, id) { const result = await query(`DELETE FROM telegram_smart_results WHERE id=$1 AND user_id=$2`, [id, userId]); if (!result.rowCount) throw new Error('نتيجة المحادثة غير موجودة'); await this.log(userId, null, id, 'result.deleted', null, 'تم حذف نتيجة محادثة ذكية'); return { deleted: true }; },
   async testRule(userId, body = {}) { const result = analyzeText(body.instructions || body.description, body.text, body.min_score, body.match_mode); return { ...result, text: String(body.text || '') }; },
-  async updateSettings(userId, body = {}) { await ensureTables(); return queryOne(`INSERT INTO telegram_smart_settings(user_id,enabled,default_min_score,context_before,context_after,analysis_language,retention_days,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT(user_id) DO UPDATE SET enabled=EXCLUDED.enabled,default_min_score=EXCLUDED.default_min_score,context_before=EXCLUDED.context_before,context_after=EXCLUDED.context_after,analysis_language=EXCLUDED.analysis_language,retention_days=EXCLUDED.retention_days,updated_at=NOW() RETURNING *`, [userId, body.enabled !== false, Math.max(0, Math.min(100, Number(body.default_min_score) || DEFAULT_SCORE)), Math.max(0, Math.min(10, Number(body.context_before) || 2)), Math.max(0, Math.min(10, Number(body.context_after) || 2)), body.analysis_language || 'ar', Math.max(1, Math.min(3650, Number(body.retention_days) || 90))]); },
+  async updateSettings(userId, body = {}) {
+    await ensureTables();
+    const current = await queryOne(`SELECT * FROM telegram_smart_settings WHERE user_id=$1`, [userId]);
+    const numberOr = (value, fallback, min, max) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+    };
+    const enabled = typeof body.enabled === 'boolean' ? body.enabled : current?.enabled !== false;
+    const minScore = numberOr(body.default_min_score, Number(current?.default_min_score ?? DEFAULT_SCORE), 0, 100);
+    const before = numberOr(body.context_before, Number(current?.context_before ?? 2), 0, 10);
+    const after = numberOr(body.context_after, Number(current?.context_after ?? 2), 0, 10);
+    const retention = numberOr(body.retention_days, Number(current?.retention_days ?? 90), 1, 3650);
+    const language = String(body.analysis_language ?? current?.analysis_language ?? 'ar').slice(0, 10) || 'ar';
+    return queryOne(`INSERT INTO telegram_smart_settings(user_id,enabled,default_min_score,context_before,context_after,analysis_language,retention_days,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT(user_id) DO UPDATE SET enabled=EXCLUDED.enabled,default_min_score=EXCLUDED.default_min_score,context_before=EXCLUDED.context_before,context_after=EXCLUDED.context_after,analysis_language=EXCLUDED.analysis_language,retention_days=EXCLUDED.retention_days,updated_at=NOW() RETURNING *`, [userId, enabled, minScore, before, after, language, retention]);
+  },
   async log(userId, rule, resultId, decision, score, reason, message = {}) { return query(`INSERT INTO telegram_smart_logs(user_id,rule_id,result_id,telegram_account_id,chat_id,message_id,decision,match_score,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [userId, rule?.id || null, resultId, message.telegram_account_id || null, message.chat_id || null, message.message_id || null, decision, score, reason]); },
   async ingest(accountId, message = {}) {
     await ensureTables(); await ensureBlockedUsersTable(); await ensureBlockedGroupsTable();
     const account = await queryOne(`SELECT id,user_id,name FROM telegram_accounts WHERE id=$1`, [accountId]); if (!account) return { analyzed: 0, matched: 0 };
     if (await isUserBlocked(account.user_id, message.sender_id) || await isGroupBlocked(account.user_id, message.chat_id)) return { analyzed: 0, matched: 0, blocked: true };
     const settings = await queryOne(`SELECT * FROM telegram_smart_settings WHERE user_id=$1`, [account.user_id]); if (settings && settings.enabled === false) return { analyzed: 0, matched: 0, disabled: true };
+    const globalMinScore = Math.max(0, Math.min(100, Number(settings?.default_min_score ?? DEFAULT_SCORE)));
     const rules = await queryAll(`SELECT * FROM telegram_smart_rules WHERE user_id=$1 AND is_active=true ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,created_at ASC`, [account.user_id]);
     let analyzed = 0; let matched = 0; const output = [];
     for (const rule of rules) {
@@ -336,7 +351,7 @@ const Service = {
         await this.log(account.user_id, rule, row.id, 'gemini.queued', null, 'تم وضع الرسالة في Queue لتحليل Gemini', message);
         let enqueueSucceeded = true;
         try {
-          await QueueManager.enqueueGeminiAnalysis({ resultId: row.id, userId: account.user_id, accountId, accountName: account.name, rule, message }, { jobId: `gemini-analysis-${accountId}-${message.chat_id}-${message.message_id}-${rule.id}`.replace(/[^a-zA-Z0-9_-]/g, '_') });
+          await QueueManager.enqueueGeminiAnalysis({ resultId: row.id, userId: account.user_id, accountId, accountName: account.name, rule: { ...rule, min_score: Math.max(globalMinScore, Number(rule.min_score ?? DEFAULT_SCORE)) }, message }, { jobId: `gemini-analysis-${accountId}-${message.chat_id}-${message.message_id}-${rule.id}`.replace(/[^a-zA-Z0-9_-]/g, '_') });
         } catch (queueError) {
           enqueueSucceeded = false;
           await query(`UPDATE telegram_smart_results SET ai_status='failed',status='analysis_failed',ai_error=$1,updated_at=NOW() WHERE id=$2 AND user_id=$3`, ['تعذر وضع المهمة في Queue', row.id, account.user_id]).catch(() => {});
@@ -349,7 +364,7 @@ const Service = {
         SocketBridge.to(`user:${account.user_id}`).emit('telegram:smart:analyzed', { result: pending, analysis: { engine: 'gemini', status: 'pending' } });
         continue;
       }
-      const analysis = analyzeText(rule.instructions, message.text || message.message, rule.min_score, rule.match_mode);
+      const analysis = analyzeText(rule.instructions, message.text || message.message, Math.max(globalMinScore, Number(rule.min_score ?? DEFAULT_SCORE)), rule.match_mode);
       const row = await queryOne(`INSERT INTO telegram_smart_results(user_id,rule_id,telegram_account_id,chat_id,chat_title,chat_username,chat_type,message_id,sender_id,sender_username,sender_name,message_text,message_timestamp,context,match_score,is_match,reason,status,analyzed_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,\'new\',NOW(),NOW()) ON CONFLICT(telegram_account_id,chat_id,message_id,rule_id) DO UPDATE SET chat_title=EXCLUDED.chat_title,chat_username=EXCLUDED.chat_username,chat_type=EXCLUDED.chat_type,sender_id=EXCLUDED.sender_id,sender_username=EXCLUDED.sender_username,sender_name=EXCLUDED.sender_name,message_text=EXCLUDED.message_text,message_timestamp=EXCLUDED.message_timestamp,context=EXCLUDED.context,match_score=EXCLUDED.match_score,is_match=EXCLUDED.is_match,reason=EXCLUDED.reason,analyzed_at=NOW(),updated_at=NOW() RETURNING *`, [account.user_id, rule.id, accountId, String(message.chat_id || ''), message.chat_title || null, message.chat_username || null, message.chat_type || null, String(message.message_id || ''), message.sender_id || null, message.sender_username || null, message.sender_name || null, String(message.text || message.message || '').trim(), message.date ? new Date(message.date) : (message.timestamp ? new Date(message.timestamp) : new Date()), JSON.stringify(message.context || {}), analysis.score, analysis.isMatch, analysis.reason]);
       if (!row) continue; analyzed++; if (analysis.isMatch) matched++;
       await this.log(account.user_id, rule, row.id, analysis.isMatch ? 'matched' : 'not_matched', analysis.score, analysis.reason, message);
