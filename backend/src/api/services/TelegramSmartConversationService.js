@@ -12,8 +12,21 @@ const normalizeTelegramId = value => { const raw = String(value ?? '').trim().re
 const DEFAULT_RULE_NAME = 'الخدمات الأكاديمية والتقنية المتكاملة';
 const DEFAULT_RULE_INSTRUCTIONS = `اكتشف المحادثات التي يطلب فيها المستخدم خدمة تعليمية أو أكاديمية أو تقنية أو تنظيمية من الخدمات التالية: حل وشرح الواجبات والتكاليف، إعداد ومراجعة Assignments، البحوث والدراسات وخطط البحث والمراجع، مشاريع التخرج والتقارير والعروض والمناقشة، التحليل الإحصائي وSPSS وتنظيف البيانات والاختبارات الإحصائية، البرمجة وعلوم الحاسب Python وJava وC++ وMATLAB وSQL وHTML وCSS وJavaScript والخوارزميات وقواعد البيانات وتطوير الويب وتطبيقات الجوال، الذكاء الاصطناعي والتعلم الآلي وتحليل البيانات، تصميم قواعد البيانات وERD ونظم المعلومات، الشبكات والأمن السيبراني التعليمي والمحاكاة، PowerPoint وPresentations والإنفوجرافيك والخرائط الذهنية، التلخيص والترجمة والتدقيق والتنسيق وWord وPDF، التقارير ودراسات الحالة، إعداد CV والسيرة الذاتية وATS، الشرح والمراجعة والاستعداد للمناقشة، أو تنظيم المستندات والخدمات الطبية النظامية الرسمية فقط. أعطِ أولوية للمحادثة إذا احتوت على طلب واضح أو سؤال عن السعر أو التسليم أو المراجعة أو التنفيذ. لا تعتبر التحية العامة أو النقاش غير المرتبط بالخدمات مطابقة. استبعد صراحة طلبات المستندات أو الأعذار الطبية المزورة، انتحال صفة جهة صحية، تزوير الشهادات أو المراجع، الاختراق أو إساءة استخدام الأمن السيبراني، وأي طلب غير قانوني أو ضار.`;
 async function ensureDefaultRule(userId) {
-  await query(`INSERT INTO telegram_smart_rules(user_id,name,description,instructions,match_mode,min_score,priority,account_ids,group_mode,group_ids,exclude_group_ids,is_active) SELECT $1,$2,$3,$4,'wide',65,'high','[]','all','[]','[]',TRUE WHERE NOT EXISTS (SELECT 1 FROM telegram_smart_rules WHERE user_id=$1 AND name=$2)`, [userId, DEFAULT_RULE_NAME, 'قاعدة شاملة لاكتشاف طلبات الخدمات الأكاديمية والتقنية والتنظيمية وفق مواصفات الخدمات المرفقة.', DEFAULT_RULE_INSTRUCTIONS]);
+  const seeds = [{ name: DEFAULT_RULE_NAME, priority: 'high', instructions: DEFAULT_RULE_INSTRUCTIONS }, ...STUDENT_RULE_SEEDS];
+  for (const rule of seeds) {
+    await query(`INSERT INTO telegram_smart_rules(user_id,name,description,instructions,match_mode,min_score,priority,account_ids,group_mode,group_ids,exclude_group_ids,is_active) SELECT $1,$2,$3,$4,'balanced',95,$5,'[]','all','[]','[]',TRUE WHERE NOT EXISTS (SELECT 1 FROM telegram_smart_rules WHERE user_id=$1 AND name=$2)`, [userId, rule.name, `قاعدة متخصصة لاكتشاف ${rule.name}.`, rule.instructions, rule.priority]);
+    await query(`UPDATE telegram_smart_rules SET min_score=GREATEST(min_score,95),updated_at=NOW() WHERE user_id=$1 AND name=$2`, [userId, rule.name]);
+  }
 }
+const STUDENT_RULE_SEEDS = [
+  { name: 'طلبات البحوث والدراسات', priority: 'medium', instructions: 'اكتشف طلبات إعداد أو كتابة أو مراجعة بحث أكاديمي أو دراسة أو خطة بحث أو منهجية أو إطار نظري أو مراجع أو توثيق أو دراسة حالة مع سياق تعليمي وطلب فعلي أو موعد أو عدد صفحات. استبعد النقاش العام ومشاركة مصدر بلا طلب واختلاق البيانات أو النتائج أو المراجع.' },
+  { name: 'واجبات وتكاليف الطلاب', priority: 'high', instructions: 'اكتشف طلبات حل أو شرح أو مراجعة أو تنسيق واجب أو تكليف أو Assignment أو Homework مرتبط بمادة دراسية مع طلب واضح أو سؤال أو موعد تسليم. استبعد التحية والنقاش العام والغش في اختبار مباشر أو انتحال عمل الطالب.' },
+  { name: 'مشاريع التخرج والتقارير', priority: 'high', instructions: 'اكتشف طلبات مشاريع التخرج والمشاريع الدراسية والتقارير ودراسات الحالة، مثل اختيار فكرة أو إعداد خطة أو مراجعة المحتوى أو التوثيق أو تجهيز المناقشة. استبعد الأخبار والنقاش العام وتزوير النتائج أو انتحال مشروع شخص آخر.' },
+  { name: 'العروض التقديمية للطلاب', priority: 'medium', instructions: 'اكتشف طلبات إعداد أو تصميم أو تلخيص أو مراجعة عرض PowerPoint أو Presentation أو شرائح أو Poster أو Infographic مرتبط بمادة أو مشروع أو مناقشة، خصوصًا مع عدد شرائح أو موعد تقديم. استبعد مشاركة عرض بلا طلب.' },
+  { name: 'الاختبارات النهائية والاستعداد للاختبار', priority: 'high', instructions: 'اكتشف طلبات المراجعة والاستعداد للاختبارات والاختبارات النهائية والاختبارات التجريبية، مثل شرح المنهج أو تلخيص الفصول أو إعداد أسئلة تدريبية أو حل نماذج سابقة. استبعد إجابات اختبار جارٍ أو تسريب اختبار أو انتحال الطالب.' },
+  { name: 'البرمجة والمشاريع التقنية للطلاب', priority: 'medium', instructions: 'اكتشف طلبات البرمجة أو تصحيح الكود أو شرح الخوارزميات أو قواعد البيانات أو تطبيقات الويب والجوال أو الذكاء الاصطناعي المرتبطة بمقرر أو واجب أو مشروع طلابي. استبعد الاختراق وسرقة الحسابات والبرمجيات الضارة وإساءة استخدام الأمن السيبراني.' },
+  { name: 'المستندات والأعذار الرسمية المشروعة', priority: 'medium', instructions: 'اكتشف طلبات صياغة أو مراجعة مستند رسمي مشروع للمدرسة أو الجامعة مثل طلب تأجيل أو خطاب اعتذار إداري أو طلب إعادة اختبار. استبعد الأعذار الطبية المزورة والشهادات والتقارير والأختام والتوقيعات المزورة وانتحال الجهات الصحية.' },
+];
 const STOP_WORDS = new Set('من في عن على إلى الى هذا هذه ذلك التي الذي و أو ثم مع هو هي any the and or for from with that this'.split(/\s+/));
 const CONCEPT_GROUPS = [
   ['academic', ['طالب', 'طلاب', 'طالبا', 'جامعة', 'جامعي', 'بحث', 'ابحاث', 'واجب', 'مشروع', 'تخرج', 'تقرير', 'عرض', 'أكاديمي', 'اكاديمي', 'دراسي', 'مقرر', 'رسالة', 'student', 'university', 'research', 'assignment', 'thesis', 'academic']],
@@ -187,7 +200,7 @@ const Service = {
     await ensureBlockedGroupsTable();
     await ensureDefaultRule(userId);
     const accountRows = await queryAll(`SELECT id,name,phone_number,username,status,last_activity_at,created_at FROM telegram_accounts WHERE user_id=$1 ORDER BY created_at DESC`, [userId]);
-    await query(`INSERT INTO telegram_smart_settings(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING`, [userId]);
+    await query(`INSERT INTO telegram_smart_settings(user_id,default_min_score) VALUES($1,95) ON CONFLICT(user_id) DO UPDATE SET default_min_score=GREATEST(telegram_smart_settings.default_min_score,95),updated_at=NOW()`, [userId]);
     // الاستعلامات الثانوية لا يجب أن تمنع عرض البطاقات إذا تعطل أحدها مؤقتًا.
     // Promise.all كان يلغي الاستجابة كاملة عند فشل الإحصاءات أو السجل، فتظهر
     // للمستخدم أرقام الإحصاءات أحيانًا دون بطاقات أو تظهر رسالة timeout فقط.
