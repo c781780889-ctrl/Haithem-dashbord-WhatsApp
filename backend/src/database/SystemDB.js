@@ -505,14 +505,29 @@ const SystemDB = {
         return { rowCount: result.rowCount };
     },
 
-    async seedSuperAdmin() {
-        const existing = await this.get(`SELECT id FROM users WHERE role = 'super_admin' LIMIT 1`);
-        if (existing) return;
-
-        const password = process.env.ADMIN_PASSWORD || 'Admin@123456';
-        const hash = await bcrypt.hash(password, 12);
+        async seedSuperAdmin() {
         const username = process.env.ADMIN_USERNAME || 'admin';
+        const password = process.env.ADMIN_PASSWORD || 'Admin@123456';
+        const existing = await this.get(`SELECT id FROM users WHERE role = 'super_admin' LIMIT 1`);
 
+        // Normal redeploys must not overwrite a password changed in the UI.
+        // Set RESET_ADMIN_PASSWORD=true for an explicit one-time reset.
+        if (existing) {
+            if (process.env.RESET_ADMIN_PASSWORD === 'true' && process.env.ADMIN_PASSWORD) {
+                const hash = await bcrypt.hash(password, 12);
+                await this.run(
+                    `UPDATE users
+                     SET username=$1, password=$2, status='active', failed_login_count=0,
+                         locked_until=NULL, updated_at=NOW()
+                     WHERE id=$3`,
+                    [username, hash, existing.id]
+                );
+                console.log(`[SystemDB] Admin credentials reset for: ${username}`);
+            }
+            return;
+        }
+
+        const hash = await bcrypt.hash(password, 12);
         await this.run(
             `INSERT INTO users (id, username, password, full_name, role, status)
              VALUES ($1, $2, $3, $4, 'super_admin', 'active')
