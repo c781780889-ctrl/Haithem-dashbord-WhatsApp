@@ -188,7 +188,10 @@ const Service = {
     await ensureDefaultRule(userId);
     const accountRows = await queryAll(`SELECT id,name,phone_number,username,status,last_activity_at,created_at FROM telegram_accounts WHERE user_id=$1 ORDER BY created_at DESC`, [userId]);
     await query(`INSERT INTO telegram_smart_settings(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING`, [userId]);
-    const [rules, settings, stats, logs, notifications, resultRows] = await Promise.all([
+    // الاستعلامات الثانوية لا يجب أن تمنع عرض البطاقات إذا تعطل أحدها مؤقتًا.
+    // Promise.all كان يلغي الاستجابة كاملة عند فشل الإحصاءات أو السجل، فتظهر
+    // للمستخدم أرقام الإحصاءات أحيانًا دون بطاقات أو تظهر رسالة timeout فقط.
+    const settled = await Promise.allSettled([
       queryAll(`SELECT * FROM telegram_smart_rules WHERE user_id=$1 ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,created_at DESC`, [userId]),
       queryOne(`SELECT * FROM telegram_smart_settings WHERE user_id=$1`, [userId]),
       queryOne(`SELECT COUNT(*)::int AS discovered,COUNT(*) FILTER(WHERE is_match AND NOT EXISTS (SELECT 1 FROM telegram_keyword_blocked_users bu WHERE bu.user_id=telegram_smart_results.user_id AND bu.telegram_user_id=telegram_smart_results.sender_id AND bu.is_active=true AND telegram_smart_results.detected_at >= bu.blocked_at) AND NOT EXISTS (SELECT 1 FROM telegram_smart_blocked_groups bg WHERE bg.user_id=telegram_smart_results.user_id AND bg.group_id=regexp_replace(telegram_smart_results.chat_id,'n$','') AND bg.is_active=true AND telegram_smart_results.detected_at >= bg.blocked_at))::int AS matched,COUNT(*) FILTER(WHERE status='new' AND NOT EXISTS (SELECT 1 FROM telegram_keyword_blocked_users bu WHERE bu.user_id=telegram_smart_results.user_id AND bu.telegram_user_id=telegram_smart_results.sender_id AND bu.is_active=true AND telegram_smart_results.detected_at >= bu.blocked_at) AND NOT EXISTS (SELECT 1 FROM telegram_smart_blocked_groups bg WHERE bg.user_id=telegram_smart_results.user_id AND bg.group_id=regexp_replace(telegram_smart_results.chat_id,'n$','') AND bg.is_active=true AND telegram_smart_results.detected_at >= bg.blocked_at))::int AS new_count,COUNT(*) FILTER(WHERE is_saved OR is_pinned)::int AS saved,COUNT(*) FILTER(WHERE deleted_in_telegram)::int AS deleted,COUNT(*) FILTER(WHERE status='review')::int AS review FROM telegram_smart_results WHERE user_id=$1`, [userId]),
@@ -196,6 +199,13 @@ const Service = {
       this.notifications(userId, 30),
       this.results(userId, filters),
     ]);
+    const valueAt = (index, fallback) => settled[index].status === 'fulfilled' ? settled[index].value : fallback;
+    const rules = valueAt(0, []);
+    const settings = valueAt(1, null);
+    const stats = valueAt(2, null);
+    const logs = valueAt(3, []);
+    const notifications = valueAt(4, []);
+    const resultRows = valueAt(5, []);
     const workers = accountRows.map(account => { const worker = TelegramService.getWorker?.(account.id); return { accountId: account.id, status: account.status, worker: worker?.status || 'stopped', lastCheck: worker?.lastCheck || null, error: worker?.error || null }; });
     const activeAccounts = workers.filter(item => item.status === 'connected' || item.worker === 'running').length;
     const activeRules = rules.filter(rule => rule.is_active).length;
