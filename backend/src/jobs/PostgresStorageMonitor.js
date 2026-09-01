@@ -32,6 +32,9 @@ class PostgresStorageMonitor {
         this.limitBytes = positive(process.env.POSTGRES_STORAGE_LIMIT_BYTES || process.env.DATABASE_STORAGE_LIMIT_BYTES);
         this.intervalMs = positive(process.env.POSTGRES_STORAGE_MONITOR_INTERVAL_MS, DEFAULT_INTERVAL_MS);
         this.autoVacuum = process.env.POSTGRES_STORAGE_AUTO_VACUUM !== 'false';
+        this.monitorRetentionDays = Math.max(7, Number(process.env.POSTGRES_MONITOR_RETENTION_DAYS || 90));
+        this.autoPruneMonitoringData = process.env.POSTGRES_MONITOR_AUTO_PRUNE !== 'false';
+        this.lastPruneAt = 0;
     }
 
     async _query(sql, params = []) { return this.db.all ? this.db.all(sql, params) : (await this.db.query(sql, params)).rows; }
@@ -79,6 +82,23 @@ class PostgresStorageMonitor {
         return { executed: true, results };
     }
 
+    async _pruneMonitoringData() {
+        if (!this.autoPruneMonitoringData || Date.now() - this.lastPruneAt < 60 * 60 * 1000) return { executed: false, reason: 'not_due' };
+        this.lastPruneAt = Date.now();
+        const days = this.monitorRetentionDays;
+        const results = [];
+        for (const table of ['postgres_storage_snapshots', 'postgres_storage_audit_logs']) {
+            try {
+                const result = await this._run(`DELETE FROM ${table} WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')`, [days]);
+                results.push({ table, deleted: Number(result?.rowCount || 0) });
+            } catch (error) {
+                // Tables may not exist during first boot; pruning is non-fatal.
+                results.push({ table, deleted: 0, skipped: true });
+            }
+        }
+        return { executed: true, retentionDays: days, results };
+    }
+
     async check() {
         if (!this.limitBytes) { this.log.warn('[PostgresStorageMonitor] Disabled: POSTGRES_STORAGE_LIMIT_BYTES is not configured.'); return { enabled: false, reason: 'missing_storage_limit' }; }
         if (this.isChecking) return { skipped: true, reason: 'check_in_progress' }; this.isChecking = true;
@@ -91,6 +111,7 @@ class PostgresStorageMonitor {
                 const changed = (previous?.current_level || SAFE_LEVEL) !== status.level;
                 await this._run(`INSERT INTO postgres_storage_alert_state (state_id, alert_active, current_level, current_status, last_usage_percent, last_used_bytes, last_snapshot, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,NOW()) ON CONFLICT (state_id) DO UPDATE SET alert_active=EXCLUDED.alert_active,current_level=EXCLUDED.current_level,current_status=EXCLUDED.current_status,last_usage_percent=EXCLUDED.last_usage_percent,last_used_bytes=EXCLUDED.last_used_bytes,last_snapshot=EXCLUDED.last_snapshot,updated_at=NOW()`, [STATE_ID, status.level !== SAFE_LEVEL, status.level, status.status, status.usagePercent, status.usedBytes, JSON.stringify(status)]);
                 await this._run(`INSERT INTO postgres_storage_snapshots (usage_percent, used_bytes, limit_bytes, level, dominant_source, details, created_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW())`, [status.usagePercent, status.usedBytes, status.limitBytes, status.level, status.analysis?.dominantSource?.key || null, JSON.stringify(status)]).catch(error => this.log.warn({ err: error }, '[PostgresStorageMonitor] snapshot write failed'));
+                await this._pruneMonitoringData().catch(error => this.log.warn({ err: error }, '[PostgresStorageMonitor] retention prune failed'));
                 if (changed && status.level !== SAFE_LEVEL) {
                     const cleanup = status.level === 'critical' ? await this._safeCleanup(status) : { executed: false, reason: 'not_critical' };
                     const main = status.analysis?.dominantSource?.key || 'غير محدد';

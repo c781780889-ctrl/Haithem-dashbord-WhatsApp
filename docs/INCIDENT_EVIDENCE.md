@@ -39,3 +39,19 @@ PostgreSQL:
 ## قيود التحقق
 
 لا يمكن قياس المساحة الحرة داخل Volume أو فحص `pg_wal` من التطبيق عندما تكون PostgreSQL متوقفة. يلزم قراءة PostgreSQL Deploy Logs وVolume Metrics من Railway قبل اختيار علاج نهائي. تعليمات المشروع تمنع حذف ملفات PostgreSQL الداخلية أو إعادة تهيئة Volume دون Backup صالح.
+
+## تحقق إنتاجي بعد آخر نشر
+
+في 2026-09-01 23:40 UTC أعاد `GET /health/deep` استجابة `503` بحالة `unhealthy`:
+
+```json
+{
+  "postgres": {"status":"error","ms":3001,"message":"PostgreSQL timeout"},
+  "redis": {"status":"ok","ms":2},
+  "whatsapp": {"status":"error","ms":3000,"message":"WhatsApp DB check timeout"}
+}
+```
+
+هذا يثبت أن Redis يعمل، لكن PostgreSQL لم يعد يقبل الاتصال بعد، وأن التطبيق المنشور ما زال ينتظر الاعتماد الأساسي. فتح صفحة PostgreSQL في Railway عبر الجلسة الحالية لا يعرض عناصر التحكم أو السجلات، لذلك لا يمكن تحديد نوع تلف Volume من التطبيق وحده.
+
+لم تُحذف أي بيانات أو ملفات PostgreSQL، ولم يُحذف Volume، ولم تُنفذ إعادة تهيئة.
