@@ -399,8 +399,13 @@ async function bootstrap() {
         setupGracefulShutdown();
 
     } catch (err) {
-        logger.error({ err }, 'Bootstrap failed');
-        process.exit(1);
+        logger.error({ err }, 'Bootstrap failed — HTTP server remains available; retrying dependencies in 30s.');
+        // Do not terminate the process after HTTP has started. Railway returns
+        // 502 when a transient PostgreSQL/Redis failure reaches process.exit(1).
+        // Keep the dashboard alive and retry the dependency bootstrap instead.
+        setTimeout(() => bootstrap().catch(retryError =>
+            logger.error({ err: retryError }, 'Bootstrap retry failed; another retry will be scheduled.')
+        ), 30_000).unref();
     }
 }
 
