@@ -328,8 +328,12 @@ async function bootstrap() {
             logger.error({ err: migErr }, '[Migration] Migration runner failed — continuing bootstrap.');
         }
 
-        // 5. Start BullMQ Scheduler
-        await JobScheduler.start();
+        // 5. Start BullMQ Scheduler. Redis failure must not prevent HTTP Dashboard boot.
+        try {
+            await JobScheduler.start();
+        } catch (schedulerError) {
+            logger.error({ err: schedulerError }, '[Scheduler] Redis/queue unavailable — continuing without scheduler.');
+        }
 
     // ── Telegram Workers ──────────────────────────────────────────────────────
     const TelegramAuthService = require('./src/api/services/TelegramAuthService');
@@ -341,7 +345,11 @@ async function bootstrap() {
         // 5b. [FIX-20] Start QueueManager — نظام Queue المركزي
         // تسجيل handlers قبل start()
         _registerQueueHandlers();
-        await QueueManager.start();
+        try {
+            await QueueManager.start();
+        } catch (queueError) {
+            logger.error({ err: queueError }, '[QueueManager] Redis unavailable — continuing HTTP bootstrap without queues.');
+        }
         const TelegramJoinAutomationService = require('./src/api/services/TelegramJoinAutomationService');
         TelegramJoinAutomationService.startBackgroundWorkers();
         const LinkImportService = require('./src/api/services/LinkImportService');
@@ -354,12 +362,20 @@ async function bootstrap() {
         logger.info(`[Phase4] QueueManager started. Recovered link operations: ${recoveredLinkOperations}`);
         logger.info('[Phase4] Queues: wa-campaigns, wa-sync, wa-notifications, wa-link-imports; link-import recovery watchdog: ON');
         const KeywordMonitoringService = require('./src/api/services/KeywordMonitoringService');
-        await KeywordMonitoringService.startWorker();
-        logger.info('[KeywordWorker] Durable keyword processing worker started.');
+        try {
+            await KeywordMonitoringService.startWorker();
+            logger.info('[KeywordWorker] Durable keyword processing worker started.');
+        } catch (keywordError) {
+            logger.error({ err: keywordError }, '[KeywordWorker] Redis unavailable — continuing without keyword worker.');
+        }
         const AIAutomationService = require('./src/api/services/AIAutomationService');
-        await AIAutomationService.registerCoreEvents();
-        await AIAutomationService.startWorker();
-        logger.info('[AIWorker] AI automation worker and event bus started.');
+        try {
+            await AIAutomationService.registerCoreEvents();
+            await AIAutomationService.startWorker();
+            logger.info('[AIWorker] AI automation worker and event bus started.');
+        } catch (aiWorkerError) {
+            logger.error({ err: aiWorkerError }, '[AIWorker] Redis unavailable — continuing without AI worker.');
+        }
 
         // 6. Start AccountRoleEngine
         AccountRoleEngine.setDependencies(JobScheduler, WhatsAppManager);
