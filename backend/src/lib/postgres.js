@@ -31,7 +31,9 @@ function poolOptions(overrides = {}) {
         ssl: isLocal ? false : { rejectUnauthorized: false },
         max: parseInt(process.env.DB_POOL_MAX || '5', 10),
         idleTimeoutMillis: 60000,
-        connectionTimeoutMillis: 10000,
+        connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS || 10000),
+        query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS || 15000),
+        statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS || 15000),
         keepAlive: true,
         keepAliveInitialDelayMillis: 10000,
     }, overrides);

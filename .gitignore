@@ -4,3 +4,21 @@ node_modules/
 !.env.example
 .DS_Store
 npm-debug.log*
+
+# Runtime and local storage
+backups/
+logs/
+*.log
+sessions/
+credentials/
+*.dump
+*.sql
+/tmp/
+tmp/
+uploads/
+exports/
+reports/
+screenshots/
+downloads/
+cache/
+frontend/dist/

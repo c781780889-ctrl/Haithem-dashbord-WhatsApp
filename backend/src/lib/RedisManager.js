@@ -67,9 +67,12 @@ function createConnection(name, extra = {}) {
     const conn = new Redis(url, {
         maxRetriesPerRequest: 3,
         enableReadyCheck: true,
-        connectTimeout: 10_000,
+        connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 10_000),
+        commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS || 5_000),
         retryStrategy: (times) => {
-            const delay = Math.min(times * 150, 5_000);
+            const base = Math.min(1000 * (2 ** Math.min(times - 1, 6)), 60_000);
+            const jitter = Math.floor(Math.random() * Math.max(250, base * 0.2));
+            const delay = Math.min(base + jitter, 60_000);
             console.log(`[Redis:${name}] Reconnecting attempt ${times} — delay ${delay}ms`);
             return delay;
         },

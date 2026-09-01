@@ -124,6 +124,24 @@ class HealthService {
         return report;
     }
 
+    async database() {
+        return this._safeDependencyCheck(() => this._checkPostgres(), 'postgres');
+    }
+
+    async redis() {
+        return this._safeDependencyCheck(() => this._checkRedis(), 'redis');
+    }
+
+    async _safeDependencyCheck(check, name) {
+        try {
+            const result = await check();
+            return { status: result.status, service: name, ...(result.ms !== undefined ? { latencyMs: result.ms } : {}) };
+        } catch (error) {
+            logger.warn({ service: name, err: error }, '[HealthService] dependency check failed');
+            return { status: 'error', service: name, message: 'Dependency unavailable' };
+        }
+    }
+
     // ── فحص PostgreSQL ────────────────────────────────────────────────────────
     async _checkPostgres() {
         const t0 = Date.now();
@@ -144,7 +162,7 @@ class HealthService {
             return {
                 status:  'error',
                 ms:      Date.now() - t0,
-                message: err.message,
+                message: 'Dependency unavailable',
             };
         }
     }
@@ -171,7 +189,7 @@ class HealthService {
             return {
                 status:  'error',
                 ms:      Date.now() - t0,
-                message: err.message,
+                message: 'Dependency unavailable',
             };
         }
     }
@@ -210,7 +228,7 @@ class HealthService {
             return {
                 status:  'error',
                 ms:      Date.now() - t0,
-                message: err.message,
+                message: 'Dependency unavailable',
             };
         }
     }

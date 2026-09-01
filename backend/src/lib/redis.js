@@ -94,11 +94,14 @@ function getBullMQConnection() {
         maxRetriesPerRequest: null,   // ← إلزامي لـ BullMQ
         enableReadyCheck:     false,  // ← إلزامي لـ BullMQ
         retryStrategy: (times) => {
-            const delay = Math.min(times * 200, 5000);
+            const base = Math.min(1000 * (2 ** Math.min(times - 1, 6)), 60_000);
+            const jitter = Math.floor(Math.random() * Math.max(250, base * 0.2));
+            const delay = Math.min(base + jitter, 60_000);
             console.log(`[Redis/BullMQ] Reconnecting attempt ${times}, delay ${delay}ms`);
             return delay;
         },
-        connectTimeout: 10000,
+        connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 10000),
+        commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS || 5000),
     });
 
     conn.on('ready', () => configureBullMQPersistence(conn).catch(() => {}));

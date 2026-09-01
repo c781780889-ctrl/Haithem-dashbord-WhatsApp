@@ -49,6 +49,7 @@ const SystemDB           = require('./src/database/SystemDB');
 const WhatsAppManager    = require('./src/bot/WhatsAppManager');
 const JobScheduler       = require('./src/scheduler/JobScheduler');
 const PostgresStorageMonitor = require('./src/jobs/PostgresStorageMonitor');
+const StorageMonitor = require('./src/jobs/StorageMonitor');
 const TelegramService    = require('./src/api/services/TelegramService');
 const AccountRoleEngine  = require('./src/api/services/AccountRoleEngine');
 // [FIX-2] Global Socket Layer
@@ -98,6 +99,14 @@ app.get('/health/deep',   async (req, res) => {
     const result = await HealthService.deep();
     const httpStatus = result.status === 'healthy' ? 200 : result.status === 'degraded' ? 207 : 503;
     res.status(httpStatus).json(result);
+});
+app.get('/health/database', async (req, res) => {
+    const result = await HealthService.database();
+    res.status(result.status === 'ok' ? 200 : 503).json(result);
+});
+app.get('/health/redis', async (req, res) => {
+    const result = await HealthService.redis();
+    res.status(result.status === 'ok' ? 200 : 503).json(result);
 });
 
 // ── Trust Proxy (مطلوب على Railway) ──────────────────────────────────────────
@@ -386,6 +395,8 @@ async function bootstrap() {
 
         // 7b. مراقبة مساحة PostgreSQL والتنبيه عند بلوغ 70% (قابل للضبط عبر البيئة)
         PostgresStorageMonitor.start();
+        // مراقبة مساحة التطبيق وinodes. التنظيف التلقائي معطل افتراضيًا ومحصور بمجلدات مصرح بها.
+        StorageMonitor.start();
 
         // 8. Start GroupSyncService
         const GroupSyncService = require('./src/api/services/GroupSyncService');
@@ -417,6 +428,7 @@ function setupGracefulShutdown() {
             logger.info('HTTP server closed.');
             AccountRoleEngine.stop();
             PostgresStorageMonitor.stop();
+            StorageMonitor.stop();
             await JobScheduler.stop();
             // [FIX-20] إيقاف QueueManager قبل RedisManager
             try { require('./src/api/services/LinkImportService').stopRecoveryWorker(); } catch {}
