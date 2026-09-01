@@ -18,6 +18,25 @@
  */
 const Redis = require('ioredis');
 
+const lastBullMQErrorAt = new Map();
+function logBullMQError(err) {
+    const now = Date.now();
+    const previous = lastBullMQErrorAt.get(err?.message || 'unknown') || 0;
+    if (now - previous < 10_000) return;
+    lastBullMQErrorAt.set(err?.message || 'unknown', now);
+    console.error(`[Redis/BullMQ] Error: ${err.message}`);
+}
+
+async function configureBullMQPersistence(conn) {
+    if (process.env.REDIS_RELAX_PERSISTENCE_GUARD === 'false') return;
+    try {
+        await conn.config('SET', 'stop-writes-on-bgsave-error', 'no');
+        console.warn('[Redis/BullMQ] Persistence write guard relaxed; repair Redis disk/RDB configuration.');
+    } catch (_) {
+        // CONFIG is disabled on some managed Redis providers.
+    }
+}
+
 function requireRedisUrl(context) {
     const value = (process.env.REDIS_URL || '').trim();
     let parsed;
@@ -82,7 +101,8 @@ function getBullMQConnection() {
         connectTimeout: 10000,
     });
 
-    conn.on('error', (err) => console.error('[Redis/BullMQ] Error:', err.message));
+    conn.on('ready', () => configureBullMQPersistence(conn).catch(() => {}));
+    conn.on('error', (err) => logBullMQError(err));
     return conn;
 }
 

@@ -20,6 +20,30 @@
 
 const Redis = require('ioredis');
 
+const lastRedisErrorAt = new Map();
+function logRedisError(name, err) {
+    const now = Date.now();
+    const previous = lastRedisErrorAt.get(name) || 0;
+    // Redis can emit the same MISCONF error for every queued command. Do not
+    // flood Railway logs or trigger its log-rate limiter.
+    if (now - previous < 10_000) return;
+    lastRedisErrorAt.set(name, now);
+    console.error(`[Redis:${name}] Error: ${err.message}`);
+}
+
+async function relaxPersistenceWriteGuard(conn, name) {
+    // Railway-managed Redis may reject CONFIG; failure is intentionally ignored.
+    // When permitted, this keeps transient RDB snapshot failures from turning
+    // every cache/queue write into MISCONF while the service remains available.
+    if (process.env.REDIS_RELAX_PERSISTENCE_GUARD === 'false') return;
+    try {
+        await conn.config('SET', 'stop-writes-on-bgsave-error', 'no');
+        console.warn(`[Redis:${name}] Persistence write guard relaxed; repair Redis disk/RDB configuration.`);
+    } catch (_) {
+        // Managed providers commonly disable CONFIG. The app must still boot.
+    }
+}
+
 /**
  * مصنع الاتصالات — يُنشئ كل اتصال بإعدادات مُحسَّنة لاستخدامه المحدد
  * @param {string} name  - اسم الاتصال (للـ logging)
@@ -54,8 +78,11 @@ function createConnection(name, extra = {}) {
     });
 
     conn.on('connect',      () => console.log(`[Redis:${name}] Connected.`));
-    conn.on('ready',        () => console.log(`[Redis:${name}] Ready.`));
-    conn.on('error',        (err) => console.error(`[Redis:${name}] Error: ${err.message}`));
+    conn.on('ready',        () => {
+        console.log(`[Redis:${name}] Ready.`);
+        relaxPersistenceWriteGuard(conn, name).catch(() => {});
+    });
+    conn.on('error',        (err) => logRedisError(name, err));
     conn.on('close',        () => console.warn(`[Redis:${name}] Connection closed.`));
     conn.on('reconnecting', () => console.log(`[Redis:${name}] Reconnecting...`));
 
