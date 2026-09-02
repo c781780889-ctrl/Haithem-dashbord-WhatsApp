@@ -26,8 +26,15 @@ const GlobalJoinRegistry = {
   async register({ userId = null, accountId = null, originalUrl, normalizedUrl, telegramIdentifier, linkType, sourceType = 'UNKNOWN', sourceKey = null }) {
     const parsed = normalize(normalizedUrl || originalUrl); if (!parsed) return { inserted: false, status: STATUSES.INVALID, reason: 'INVALID_LINK' };
     const result = await withAdvisoryLock(`telegram-global-link:${parsed.urlHash}`, async client => {
-      const inserted = await client.query(`INSERT INTO telegram_global_join_links(original_url,normalized_url,url_hash,telegram_identifier,link_type,status,last_seen_at) VALUES($1,$2,$3,$4,$5,'PENDING',NOW()) ON CONFLICT(normalized_url) DO UPDATE SET original_url=EXCLUDED.original_url,last_seen_at=NOW(),updated_at=NOW() RETURNING *, (xmax=0) AS inserted`, [originalUrl || parsed.originalUrl, parsed.normalizedUrl, parsed.urlHash, telegramIdentifier || parsed.identifier, linkType || parsed.linkType]);
-      return inserted.rows[0];
+      // Both normalized_url and url_hash are unique. Older deployments may
+      // contain a row with the same hash but a different legacy URL, so the
+      // conflict target must not be limited to normalized_url.
+      const inserted = await client.query(`INSERT INTO telegram_global_join_links(original_url,normalized_url,url_hash,telegram_identifier,link_type,status,last_seen_at) VALUES($1,$2,$3,$4,$5,'PENDING',NOW()) ON CONFLICT DO NOTHING RETURNING *, (xmax=0) AS inserted`, [originalUrl || parsed.originalUrl, parsed.normalizedUrl, parsed.urlHash, telegramIdentifier || parsed.identifier, linkType || parsed.linkType]);
+      if (inserted.rows[0]) return inserted.rows[0];
+      const existing = await client.query(`SELECT * FROM telegram_global_join_links WHERE normalized_url=$1 OR url_hash=$2 ORDER BY CASE WHEN normalized_url=$1 THEN 0 ELSE 1 END LIMIT 1`, [parsed.normalizedUrl, parsed.urlHash]);
+      const row = existing.rows[0];
+      if (row) await client.query(`UPDATE telegram_global_join_links SET original_url=$1,last_seen_at=NOW(),updated_at=NOW() WHERE id=$2`, [originalUrl || parsed.originalUrl, row.id]);
+      return row;
     });
     await query(`INSERT INTO telegram_global_join_audit(user_id,account_id,original_url,normalized_url,url_hash,action,previous_status,new_status,reason) VALUES($1,$2,$3,$4,$5,'REGISTERED',NULL,$6,$7)`, [userId, accountId, originalUrl || parsed.originalUrl, parsed.normalizedUrl, parsed.urlHash, result?.status || STATUSES.PENDING, `${sourceType}${sourceKey ? `:${sourceKey}` : ''}`]).catch(() => {});
     return { inserted: Boolean(result?.inserted), status: result?.status || STATUSES.PENDING, normalized: parsed, registryId: result?.id || null };
@@ -37,8 +44,11 @@ const GlobalJoinRegistry = {
     const parsed = normalize(normalizedUrl || originalUrl); if (!parsed) return { allowed: false, status: STATUSES.INVALID, reason: 'INVALID_LINK' };
     const runner = async (dbClient) => {
       await dbClient.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`telegram-global-link:${parsed.urlHash}`]);
-      await dbClient.query(`INSERT INTO telegram_global_join_links(original_url,normalized_url,url_hash,telegram_identifier,link_type,status,reserved_by_account_id,reserved_operation_id,last_seen_at) VALUES($1,$2,$3,$4,$5,'RESERVED',$6,$7,NOW()) ON CONFLICT(normalized_url) DO NOTHING`, [originalUrl || parsed.originalUrl, parsed.normalizedUrl, parsed.urlHash, telegramIdentifier || parsed.identifier, linkType || parsed.linkType, accountId, operationId]);
-      const row = (await dbClient.query(`SELECT * FROM telegram_global_join_links WHERE normalized_url=$1 FOR UPDATE`, [parsed.normalizedUrl])).rows[0];
+      // Handle both unique constraints. ON CONFLICT(normalized_url) alone
+      // leaks url_hash violations and aborts the whole transaction.
+      await dbClient.query(`INSERT INTO telegram_global_join_links(original_url,normalized_url,url_hash,telegram_identifier,link_type,status,reserved_by_account_id,reserved_operation_id,last_seen_at) VALUES($1,$2,$3,$4,$5,'RESERVED',$6,$7,NOW()) ON CONFLICT DO NOTHING`, [originalUrl || parsed.originalUrl, parsed.normalizedUrl, parsed.urlHash, telegramIdentifier || parsed.identifier, linkType || parsed.linkType, accountId, operationId]);
+      const row = (await dbClient.query(`SELECT * FROM telegram_global_join_links WHERE normalized_url=$1 OR url_hash=$2 ORDER BY CASE WHEN normalized_url=$1 THEN 0 ELSE 1 END LIMIT 1 FOR UPDATE`, [parsed.normalizedUrl, parsed.urlHash])).rows[0];
+      if (!row) return { allowed: false, status: STATUSES.FAILED, reason: 'GLOBAL_REGISTRY_ROW_NOT_FOUND', normalized: parsed };
       if (row.status === STATUSES.JOINED || row.status === STATUSES.ALREADY_MEMBER) return { allowed: false, status: STATUSES.SKIPPED_DUPLICATE, reason: 'GLOBAL_DUPLICATE', existing: row, normalized: parsed };
       if (row.status === STATUSES.RESERVED && String(row.reserved_operation_id) !== String(operationId)) return { allowed: false, status: STATUSES.SKIPPED_DUPLICATE, reason: 'GLOBAL_RESERVED', existing: row, normalized: parsed };
       await dbClient.query(`UPDATE telegram_global_join_links SET status='RESERVED',reserved_by_account_id=$1,reserved_operation_id=$2,last_seen_at=NOW(),updated_at=NOW() WHERE id=$3`, [accountId, operationId, row.id]);

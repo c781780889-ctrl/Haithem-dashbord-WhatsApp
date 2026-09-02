@@ -420,7 +420,9 @@ const TelegramMigrations = {
                 FROM telegram_automation_links l
                 WHERE l.join_status='JOINED' OR l.status='SUCCESS'
                 ORDER BY l.normalized_url,l.last_seen_at DESC
-                ON CONFLICT(normalized_url) DO NOTHING
+                -- The registry has unique constraints on both normalized_url
+                -- and url_hash; legacy/case-variant rows may conflict on either.
+                ON CONFLICT DO NOTHING
             `).catch(() => {});
 
             await query(`
