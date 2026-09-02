@@ -19,6 +19,7 @@ const { isPostgresRecoveryError } = require('../core/PostgresRecovery');
 
 let pool = null;
 const QUERY_RETRY_DELAYS_MS = [150, 300, 750];
+const CLIENT_RETRY_DELAYS_MS = [250, 750, 1500, 3000];
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -35,6 +36,17 @@ function poolOptions(overrides = {}) {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
         throw new Error('[PostgreSQL] DATABASE_URL is required.');
+    }
+    if (connectionString.includes('${{') || connectionString.includes('}}')) {
+        throw new Error('[PostgreSQL] DATABASE_URL contains an unresolved Railway variable reference. Link the app to the active Postgres service.');
+    }
+    try {
+        const parsed = new URL(connectionString);
+        if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+            throw new Error('unsupported protocol');
+        }
+    } catch (error) {
+        throw new Error(`[PostgreSQL] DATABASE_URL is invalid: ${error.message}`);
     }
 
     const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
@@ -61,7 +73,7 @@ function createPool(opts = {}) {
     p.on('error', (err, client) => {
         console.error('[PostgreSQL] Pool error:', err.message);
         // إعادة إنشاء الـ pool إذا انقطع الاتصال نهائياً
-        if (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED' || err.message.includes('Connection terminated')) {
+        if (shouldRecreatePool(err)) {
             console.log('[PostgreSQL] Recreating pool due to connection error...');
             pool = null;
         }
@@ -116,7 +128,25 @@ async function queryAll(sql, params = []) {
 }
 
 async function getClient() {
-    return getPool().connect();
+    for (let attempt = 0; ; attempt += 1) {
+        const currentPool = getPool();
+        try {
+            return await currentPool.connect();
+        } catch (error) {
+            const delay = CLIENT_RETRY_DELAYS_MS[attempt];
+            if (!isPostgresRecoveryError(error) || delay === undefined) throw error;
+            if (shouldRecreatePool(error) && pool === currentPool) {
+                pool = null;
+                if (typeof currentPool.end === 'function') void currentPool.end().catch(() => {});
+            }
+            console.warn('[PostgreSQL] Client acquisition failed; retrying.', {
+                attempt: attempt + 1,
+                retryInMs: delay,
+                code: error.code,
+            });
+            await sleep(delay);
+        }
+    }
 }
 
 /**
@@ -206,7 +236,11 @@ function createAccountPool(accountId, schemaName) {
  * closeAll — إغلاق كل pools في الخادم (للاستخدام عند الإيقاف)
  */
 async function closeAll() {
-    if (pool) { await pool.end(); pool = null; }
+    if (pool) {
+        const currentPool = pool;
+        pool = null;
+        if (typeof currentPool.end === 'function') await currentPool.end();
+    }
 }
 
 module.exports = { getPool, query, queryOne, queryAll, getClient, withTransaction, withAdvisoryLock, createAccountPool, closeAll, poolOptions };
