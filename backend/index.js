@@ -32,6 +32,7 @@ const PORT = validateEnv();
 const express    = require('express');
 const cors         = require('cors');
 const cookieParser = require('cookie-parser');
+const requestId   = require('./src/api/middleware/requestId');
 const helmet     = require('helmet');
 const rateLimit  = require('express-rate-limit');
 const http       = require('http');
@@ -69,6 +70,7 @@ async function initializeDatabaseWithRecoveryRetry() {
 }
 
 const app = express();
+app.use(requestId);
 
 // ── Security: Helmet ──────────────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -92,8 +94,9 @@ app.use(metricsMiddleware);
 app.get('/metrics',       metricsHandler);
 app.get('/health',        async (req, res) => { res.json(await HealthService.ping()); });
 app.get('/health/ready',  async (req, res) => {
-    const result = await HealthService.readiness();
-    res.status(result.status === 'starting' ? 503 : 200).json(result);
+    const [readiness, deep] = await Promise.all([HealthService.readiness(), HealthService.deep()]);
+    const ready = readiness.status === 'ready' && deep.status === 'healthy';
+    res.status(ready ? 200 : 503).json({ ...readiness, status: ready ? 'ready' : deep.status, checks: deep.checks });
 });
 app.get('/health/deep',   async (req, res) => {
     const result = await HealthService.deep();
@@ -160,23 +163,6 @@ app.use('/api/v1/auth', authLimiter);  // 30 req/15min global backup
 // دقيقة ومُسمّاة من RateLimiter.js. المحدد العام السابق كان يشارك عداداً واحداً
 // بين جميع طلبات لوحة التحكم، فيحجب الواجهة برسالة 429 بعد كثرة التنقل/التحديث.
 app.use('/api/v1',      require('./src/api/routes'));
-
-app.get('/health', async (_, res) => {
-    const schedulerStats  = await JobScheduler.getStats().catch(() => null);
-    const queueStats      = await QueueManager.getStats().catch(() => null);
-    const redisHealth     = await RedisManager.healthCheck().catch(() => null);
-    res.json({
-        status:      'OK',
-        uptime:      process.uptime(),
-        timestamp:   new Date().toISOString(),
-        port:        PORT,
-        socketRooms: SocketBridge.getActiveRooms(),
-        connections: SocketBridge.getTotalConnections(),
-        scheduler:   schedulerStats,
-        queues:      queueStats,     // [FIX-20] Queue stats
-        redis:       redisHealth,    // [FIX-18] per-connection health
-    });
-});
 
 // ── HTTP Server + Socket.IO ───────────────────────────────────────────────────
 const server = http.createServer(app);

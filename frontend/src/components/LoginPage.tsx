@@ -35,9 +35,12 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
     setLoading(true);
     try {
+      const requestId = (typeof globalThis.crypto?.randomUUID === 'function')
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const res = await fetch(`${API}/auth/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Request-ID': requestId },
         body: JSON.stringify({ username, password })
       });
       const data = await res.json();
@@ -50,7 +53,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         addToast({ title: 'مرحبًا بعودتك', description: 'تم تسجيل الدخول بنجاح', type: 'success' });
         onLogin(data.accessToken, data.refreshToken, data.user);
       } else {
-        setFormError(data.error || 'بيانات الاعتماد غير صحيحة');
+        const responseId = data.requestId || res.headers.get('X-Request-ID') || requestId;
+        console.warn('[AUTH_LOGIN_FAILED]', { requestId: responseId, status: res.status, code: data.code });
+        setFormError(data.error || (res.status === 503
+          ? 'الخدمة غير متاحة مؤقتاً، يرجى المحاولة بعد قليل.'
+          : 'بيانات الاعتماد غير صحيحة'));
       }
     } catch (err) {
       setFormError('تعذر الاتصال بالخادم، الرجاء المحاولة مجددًا');

@@ -15,6 +15,7 @@ const QRCode    = require('qrcode');
 const SystemDB  = require('../../database/SystemDB');
 const JWTService       = require('../../core/JWTService');
 const EncryptionService = require('../../core/EncryptionService');
+const logger = require('../../core/Logger').child({ module: 'AuthController' });
 
 // ── Role Normalization ────────────────────────────────────────────────────────
 function normalizeRole(role) {
@@ -26,11 +27,13 @@ function normalizeRole(role) {
 function isDatabaseUnavailable(error) {
     const code = String(error?.code || '');
     const message = String(error?.message || '').toLowerCase();
-    return code === '57P03'
+    return ['57P01', '57P03', '08000', '08001', '08003', '08004', '08006', '08P01', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'].includes(code)
         || code === 'ENOSPC'
         || message.includes('database system is in recovery')
         || message.includes('the database system is starting up')
-        || message.includes('no space left on device');
+        || message.includes('no space left on device')
+        || message.includes('connection terminated')
+        || message.includes('timeout');
 }
 
 class AuthController {
@@ -45,12 +48,17 @@ class AuthController {
     async login(req, res) {
         const { username, password, mfaCode } = req.body || {};
         const ip = this._ip(req);
+        const requestId = req.requestId || 'unknown';
+        const startedAt = Date.now();
+        const stage = (event, extra = {}) => logger.info({ event, requestId, route: req.originalUrl, durationMs: Date.now() - startedAt, ...extra });
+        stage('AUTH_LOGIN_STARTED');
 
         if (!username || !password)
-            return res.status(400).json({ success: false, error: 'اسم المستخدم وكلمة المرور مطلوبان.' });
+            return res.status(400).json({ success: false, error: 'اسم المستخدم وكلمة المرور مطلوبان.', requestId });
 
         try {
             // ── Brute-Force Check ────────────────────────────────────────────
+            stage('AUTH_USER_LOOKUP_STARTED');
             const block = await SystemDB.isBlocked(username);
             if (block) {
                 const until = new Date(block.blocked_until);
@@ -58,7 +66,8 @@ class AuthController {
                 return res.status(429).json({
                     success: false,
                     error: `تم حظر الحساب مؤقتاً لعدة محاولات خاطئة. حاول بعد ${mins} دقيقة.`,
-                    lockedUntil: block.blocked_until
+                    lockedUntil: block.locked_until,
+                    requestId
                 });
             }
 
@@ -67,18 +76,21 @@ class AuthController {
                 `SELECT * FROM users WHERE username = $1 AND status != 'suspended'`, [username]);
 
             if (!user) {
+                stage('AUTH_USER_NOT_FOUND');
                 await SystemDB.recordAttempt(username, ip, false);
                 await SystemDB.log(null, username, 'LOGIN_FAILED', `User not found. IP: ${ip}`, ip);
-                return res.status(401).json({ success: false, error: 'بيانات الاعتماد غير صحيحة.' });
+                return res.status(401).json({ success: false, error: 'بيانات الاعتماد غير صحيحة.', requestId });
             }
+            stage('AUTH_USER_LOOKUP_SUCCESS');
 
             // ── Account Lockout ───────────────────────────────────────────────
             if (user.locked_until && new Date(user.locked_until) > new Date()) {
                 const minsLeft = Math.ceil((new Date(user.locked_until) - Date.now()) / 60000);
-                return res.status(429).json({ success: false, error: `الحساب مقفل مؤقتاً. حاول بعد ${minsLeft} دقيقة.` });
+                return res.status(429).json({ success: false, error: `الحساب مقفل مؤقتاً. حاول بعد ${minsLeft} دقيقة.`, requestId });
             }
 
             // ── Password Check ───────────────────────────────────────────────
+            stage('AUTH_PASSWORD_VERIFICATION_STARTED');
             const match = await bcrypt.compare(password, user.password);
             if (!match) {
                 await SystemDB.recordAttempt(username, ip, false);
@@ -89,15 +101,16 @@ class AuthController {
                     [newCount, lockedUntil, user.id]
                 ).catch(() => {});
                 await SystemDB.log(user.id, username, 'LOGIN_FAILED', `Wrong password (attempt ${newCount}). IP: ${ip}`, ip);
-                return res.status(401).json({ success: false, error: 'بيانات الاعتماد غير صحيحة.' });
+                return res.status(401).json({ success: false, error: 'بيانات الاعتماد غير صحيحة.', requestId });
             }
+            stage('AUTH_PASSWORD_VERIFICATION_SUCCESS');
             // إعادة تعيين عداد الفشل
             await SystemDB.run(`UPDATE users SET failed_login_count=0, locked_until=NULL WHERE id=$1`, [user.id]).catch(() => {});
 
             // ── MFA Check ────────────────────────────────────────────────────
             if (user.mfa_enabled && user.mfa_secret) {
                 if (!mfaCode) {
-                    return res.status(200).json({ success: false, requiresMFA: true, error: 'مطلوب رمز المصادقة الثنائية.' });
+                    return res.status(200).json({ success: false, requiresMFA: true, error: 'مطلوب رمز المصادقة الثنائية.', requestId });
                 }
                 const verified = speakeasy.totp.verify({
                     secret: user.mfa_secret,
@@ -108,7 +121,7 @@ class AuthController {
                 if (!verified) {
                     await SystemDB.recordAttempt(username, ip, false);
                     await SystemDB.log(user.id, username, 'MFA_FAILED', `IP: ${ip}`, ip);
-                    return res.status(401).json({ success: false, error: 'رمز المصادقة الثنائية غير صحيح.' });
+                    return res.status(401).json({ success: false, error: 'رمز المصادقة الثنائية غير صحيح.', requestId });
                 }
             }
 
@@ -119,7 +132,7 @@ class AuthController {
                     `SELECT id, status, expires_at FROM subscriptions
                      WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
                     [user.id]
-                ).catch(() => null);
+                );
 
                 if (!sub || sub.status !== 'active') {
                     await SystemDB.recordAttempt(username, ip, false);
@@ -127,6 +140,7 @@ class AuthController {
                         success: false,
                         error: 'اشتراكك غير فعّال. يرجى التواصل مع المدير.',
                         code: 'SUBSCRIPTION_INACTIVE',
+                        requestId,
                     });
                 }
 
@@ -137,6 +151,7 @@ class AuthController {
                         error: 'انتهت مدة اشتراكك. يرجى التواصل مع المدير لتجديد الاشتراك.',
                         code: 'SUBSCRIPTION_EXPIRED',
                         expiresAt: sub.expires_at,
+                        requestId,
                     });
                 }
             }
@@ -154,11 +169,14 @@ class AuthController {
                 = JWTService.issueTokenPair(tokenPayload);
 
             // حفظ hash الـ refresh token في DB (مع family)
+            stage('AUTH_SESSION_CREATION_STARTED');
             const userAgent = req.headers['user-agent'] || '';
             await SystemDB.saveRefreshToken(user.id, tokenHash, ip, userAgent, expiresAt, family);
 
             // تسجيل الـ family في Redis
             await JWTService.registerFamily(family);
+            stage('AUTH_SESSION_CREATION_SUCCESS');
+            stage('AUTH_LOGIN_SUCCESS');
 
             return res.json({
                 success: true,
@@ -171,19 +189,22 @@ class AuthController {
                     fullName: user.full_name,
                     role: normalizedRole,
                     mfaEnabled: !!user.mfa_enabled,
-                }
+                },
+                requestId
             });
 
         } catch (err) {
-            console.error('[Auth] Login error:', err);
+            const dependency = isDatabaseUnavailable(err) ? 'postgresql' : 'authentication';
+            logger.error({ event: 'AUTH_LOGIN_FAILED', requestId, route: req.originalUrl, durationMs: Date.now() - startedAt, dependency, errorType: err?.name, errorCode: err?.code }, 'Authentication request failed');
             if (isDatabaseUnavailable(err)) {
                 return res.status(503).json({
                     success: false,
                     code: 'DATABASE_UNAVAILABLE',
-                    error: 'قاعدة البيانات غير جاهزة حاليًا. يرجى المحاولة بعد عودة PostgreSQL للعمل.'
+                    error: 'قاعدة البيانات غير متاحة مؤقتاً، يرجى المحاولة بعد قليل.',
+                    requestId
                 });
             }
-            return res.status(500).json({ success: false, error: 'خطأ داخلي في الخادم.' });
+            return res.status(500).json({ success: false, error: `حدث خطأ غير متوقع. رقم المرجع: ${requestId}`, requestId });
         }
     }
 

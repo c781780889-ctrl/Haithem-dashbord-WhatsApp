@@ -594,7 +594,7 @@ const SystemDB = {
     async isBlocked(username) {
         return await this.get(
             `SELECT locked_until FROM users WHERE username=$1 AND locked_until > NOW()`, [username]
-        ).catch(() => null);
+        );
     },
 
     // [DB-UNIFY] إغلاق الـ pool المركزي الوحيد
