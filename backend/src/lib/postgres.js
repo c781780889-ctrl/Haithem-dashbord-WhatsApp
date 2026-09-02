@@ -15,8 +15,20 @@
  *   const { query, queryOne, queryAll, getClient, createAccountPool, closeAll } = require('./lib/postgres');
  */
 const { Pool } = require('pg');
+const { isPostgresRecoveryError } = require('../core/PostgresRecovery');
 
 let pool = null;
+const QUERY_RETRY_DELAYS_MS = [150, 300, 750];
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function shouldRecreatePool(error) {
+    const message = String(error?.message || '');
+    return ['ECONNRESET', 'ECONNREFUSED', '57P01', '57P03'].includes(String(error?.code || ''))
+        || message.includes('Connection terminated');
+}
 
 // إعدادات الاتصال المشتركة (تُطبَّق على كل الـ pools في المشروع)
 function poolOptions(overrides = {}) {
@@ -67,17 +79,29 @@ function getPool() {
 }
 
 async function query(sql, params = []) {
-    const p = getPool();
-    try {
-        return await p.query(sql, params);
-    } catch (err) {
-        // إذا انقطع الاتصال، نحذف الـ pool لإعادة إنشائه في المرة القادمة
-        if (err.message.includes('Connection terminated') || err.code === 'ECONNRESET') {
-            console.error('[PostgreSQL] Connection lost, will reconnect on next query.');
-            pool = null;
+    for (let attempt = 0; ; attempt += 1) {
+        const p = getPool();
+        try {
+            return await p.query(sql, params);
+        } catch (err) {
+            const retryDelay = QUERY_RETRY_DELAYS_MS[attempt];
+            if (!isPostgresRecoveryError(err) || retryDelay === undefined) {
+                console.error('[PostgreSQL] Query error:', err.message, '\nSQL:', sql.trim().slice(0, 200));
+                throw err;
+            }
+
+            // لا نعيد استخدام pool قد يحتوي على اتصال ميت في المحاولة التالية.
+            if (shouldRecreatePool(err) && pool === p) {
+                pool = null;
+                if (typeof p.end === 'function') void p.end().catch(() => {});
+            }
+            console.warn('[PostgreSQL] Transient connection failure; retrying query.', {
+                attempt: attempt + 1,
+                retryInMs: retryDelay,
+                code: err.code,
+            });
+            await sleep(retryDelay);
         }
-        console.error('[PostgreSQL] Query error:', err.message, '\nSQL:', sql.trim().slice(0, 200));
-        throw err;
     }
 }
 
