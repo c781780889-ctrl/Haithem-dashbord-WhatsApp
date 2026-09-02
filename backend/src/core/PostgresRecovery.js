@@ -6,8 +6,12 @@ function isPostgresRecoveryError(error) {
     const code = String(error?.code || '');
     const message = String(error?.message || '').toLowerCase();
     return code === '57P03'
+        || ['08000', '08001', '08003', '08004', '08006', '08P01', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT'].includes(code)
         || message.includes('database system is in recovery')
-        || message.includes('the database system is starting up');
+        || message.includes('the database system is starting up')
+        || message.includes('connection terminated')
+        || message.includes('connection timeout')
+        || message.includes('connect timeout');
 }
 
 async function withRecoveryRetry(operation, options = {}) {
